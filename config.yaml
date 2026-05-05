@@ -1,0 +1,26 @@
+server:
+  port: 11434
+  active_profile: "auto"
+
+profiles:
+  low_end:
+    llm:
+      path: "./models/qwen3.6-7b-q4_k_m.gguf"
+      n_ctx_limit: 8192
+      n_batch: 512
+    image:
+      gguf_path: "./models/sd1.5-turbo.gguf"
+      steps: 2
+      cfg_scale: 1.0
+  high_end:
+    llm:
+      path: "./models/Qwen3.6-27B-Q4_K_M.gguf"
+      n_ctx_limit: 65536
+      n_batch: 4096
+    image:
+      gguf_path: "./models/z_image_turbo-Q8_0.gguf"
+      t5_path: "./models/Qwen3-4B-Instruct-Q4_K_M.gguf"
+      vae_path: "./models/sdxl_vae.safetensors"
+      steps: 4
+      cfg_scale: 1.0
+

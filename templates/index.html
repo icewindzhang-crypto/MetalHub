@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MetalHub - M1 Max AI 控制台</title>
+    <script src="https://tailwindcss.com"></script>
+    <link href="https://cloudflare.com" rel="stylesheet">
+    <style>
+        body { background-color: #0f172a; color: #f1f5f9; font-family: 'Inter', system-ui, sans-serif; }
+        .chat-container { height: calc(100vh - 180px); overflow-y: auto; scroll-behavior: smooth; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        .sidebar { transition: width 0.3s; }
+        .loading-dots:after { content: ' .'; animation: dots 1.5s steps(5, end) infinite; }
+        @keyframes dots { 0%, 20% { color: rgba(0,0,0,0); text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0); } 
+        40% { color: #60a5fa; text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0); }
+        60% { text-shadow: .25em 0 0 #60a5fa, .5em 0 0 rgba(0,0,0,0); }
+        80%, 100% { text-shadow: .25em 0 0 #60a5fa, .5em 0 0 #60a5fa; } }
+    </style>
+</head>
+<body class="flex h-screen overflow-hidden">
+
+    <!-- 左侧状态边栏 -->
+    <aside class="sidebar w-72 bg-slate-900 border-r border-slate-800 flex flex-col hidden lg:flex">
+        <div class="p-6 border-b border-slate-800">
+            <h1 class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">
+                METALHUB
+            </h1>
+            <p class="text-[10px] text-slate-500 tracking-widest mt-1 uppercase">M1 Max Edition</p>
+        </div>
+        
+        <div class="p-6 flex-1 space-y-6">
+            <div>
+                <label class="text-[10px] text-slate-500 uppercase font-bold tracking-tighter">System Status</label>
+                <div id="status-badge" class="mt-2 flex items-center gap-2 text-emerald-400 bg-emerald-400/10 px-3 py-2 rounded-lg border border-emerald-500/20">
+                    <span class="relative flex h-2 w-2">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    <span id="status-text" class="text-xs font-bold uppercase tracking-wider">Ready</span>
+                </div>
+            </div>
+
+            <div class="space-y-3">
+                <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-700/50 shadow-inner">
+                    <label class="text-[10px] text-slate-500 uppercase">Active Profile</label>
+                    <div class="text-sm font-bold mt-1 text-blue-400 flex items-center gap-2">
+                        <i class="fas fa-sliders-h"></i> {{ profile }}
+                    </div>
+                </div>
+                
+                <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-700/50 shadow-inner">
+                    <label class="text-[10px] text-slate-500 uppercase">Unified Memory</label>
+                    <div class="text-sm font-bold mt-1 text-slate-300">64GB / 400GB/s</div>
+                </div>
+            </div>
+
+            <div class="pt-4 border-t border-slate-800">
+                <label class="text-[10px] text-slate-500 uppercase">Model Registry</label>
+                <ul class="mt-2 space-y-2 text-xs">
+                    <li class="flex items-center gap-2 text-slate-400"><i class="fas fa-check-circle text-blue-500"></i> Qwen3.6-27B-GGUF</li>
+                    <li class="flex items-center gap-2 text-slate-400"><i class="fas fa-check-circle text-emerald-500"></i> Z-Image-Turbo</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="p-6 text-[10px] text-slate-600 font-mono">
+            v1.0.0-alpha | Localhost:11434
+        </div>
+    </aside>
+
+    <!-- 右侧主界面 -->
+    <main class="flex-1 flex flex-col relative bg-slate-950">
+        <!-- 顶部实时监控 -->
+        <header class="h-16 border-b border-slate-800/50 flex items-center justify-between px-8 bg-slate-900/30 backdrop-blur-xl z-10">
+            <div class="flex gap-6 items-center">
+                <div class="flex flex-col">
+                    <span class="text-[10px] text-slate-500 uppercase">Throughput</span>
+                    <span id="metric-tps" class="text-sm font-mono text-blue-400 font-bold">-- t/s</span>
+                </div>
+                <div class="h-8 w-px bg-slate-800"></div>
+                <div class="flex flex-col">
+                    <span class="text-[10px] text-slate-500 uppercase">Context</span>
+                    <span id="metric-ctx" class="text-sm font-mono text-slate-300 font-bold">--</span>
+                </div>
+                <div class="h-8 w-px bg-slate-800"></div>
+                <div class="flex flex-col">
+                    <span class="text-[10px] text-slate-500 uppercase">Processing</span>
+                    <span id="metric-pp" class="text-sm font-mono text-emerald-400 font-bold">-- ms</span>
+                </div>
+            </div>
+            <button onclick="clearChat()" class="text-slate-500 hover:text-red-400 transition-colors"><i class="fas fa-sync-alt"></i></button>
+        </header>
+
+        <!-- 聊天流 -->
+        <div id="chat" class="chat-container p-8 space-y-8">
+            <div class="flex flex-col items-center justify-center h-full text-slate-700 opacity-50">
+                <i class="fas fa-bolt text-5xl mb-4"></i>
+                <p class="text-lg font-medium">MetalHub Engine Active</p>
+                <p class="text-sm">Ready for 27B LLM Inference and Image Generation</p>
+            </div>
+        </div>
+
+        <!-- 输入控制区 -->
+        <div class="p-6 bg-gradient-to-t from-slate-950 to-transparent">
+            <div class="max-w-4xl mx-auto relative group">
+                <div class="absolute inset-0 bg-blue-500/5 blur-2xl rounded-full pointer-events-none group-focus-within:bg-blue-500/10 transition"></div>
+                
+                <div class="relative bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden focus-within:border-blue-500/50 transition-all">
+                    <textarea id="input" rows="1" oninput="autoResize(this)" 
+                        class="w-full bg-transparent pt-4 pb-4 pl-6 pr-32 focus:outline-none resize-none text-sm text-slate-200" 
+                        placeholder="输入提示词或生图指令..."></textarea>
+                    
+                    <div class="absolute right-3 bottom-3 flex gap-2">
+                        <button onclick="send('chat')" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-black transition flex items-center gap-2">
+                            <i class="fas fa-paper-plane"></i> CHAT
+                        </button>
+                        <button onclick="send('image')" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-xs font-black transition flex items-center gap-2">
+                            <i class="fas fa-paint-brush"></i> DRAW
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        function autoResize(textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = (Math.min(textarea.scrollHeight, 250)) + 'px';
+        }
+
+        function clearChat() { location.reload(); }
+
+        function updateStatus(text, colorClass) {
+            const badge = document.getElementById('status-badge');
+            const statusText = document.getElementById('status-text');
+            statusText.innerText = text;
+            badge.className = `mt-2 flex items-center gap-2 px-3 py-2 rounded-lg border ${colorClass}`;
+        }
+
+        async function send(type) {
+            const input = document.getElementById('input');
+            const chat = document.getElementById('chat');
+            const val = input.value.trim();
+            if (!val) return;
+
+            if(chat.innerText.includes("Active")) chat.innerHTML = "";
+            chat.innerHTML += `<div class="flex justify-end"><div class="bg-slate-800 border border-slate-700 px-4 py-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm shadow-lg text-slate-200">${val.replace(/\n/g, '<br>')}</div></div>`;
+            input.value = "";
+            autoResize(input);
+            chat.scrollTop = chat.scrollHeight;
+
+            updateStatus(type === 'chat' ? "INFERENCING" : "GENERATING", "bg-amber-400/10 text-amber-400 border-amber-500/20");
+
+            try {
+                if (type === 'chat') {
+                    const res = await fetch('/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ messages: [{role: "user", content: val}], stream: true })
+                    });
+                    
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let aiMsgId = 'ai-' + Date.now();
+                    chat.innerHTML += `<div class="flex justify-start"><div id="${aiMsgId}" class="bg-blue-600/10 border border-blue-500/20 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm leading-relaxed shadow-xl text-blue-50"><b>AI:</b><br></div></div>`;
+                    const aiContainer = document.getElementById(aiMsgId);
+
+                    while (true) {
+                        const {done, value} = await reader.read();
+                        if (done) break;
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+                        
+                        for (const line of lines) {
+                            if (!line.trim() || line === 'data: [DONE]') continue;
+                            const data = JSON.parse(line.replace('data: ', ''));
+                            
+                            if (data.extra) {
+                                if(data.extra.tps) document.getElementById('metric-tps').innerText = data.extra.tps + ' t/s';
+                                if(data.extra.n_ctx) document.getElementById('metric-ctx').innerText = data.extra.n_ctx;
+                                if(data.extra.processing_ms) document.getElementById('metric-pp').innerText = data.extra.processing_ms + ' ms';
+                            }
+                            
+                            if (data.choices && data.choices[0].delta.content) {
+                                aiContainer.innerHTML += data.choices[0].delta.content.replace(/\n/g, '<br>');
+                                chat.scrollTop = chat.scrollHeight;
+                            }
+                        }
+                    }
+                } else {
+                    const res = await fetch('/v1/images/generations', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ prompt: val })
+                    });
+                    const data = await res.json();
+                    chat.innerHTML += `<div class="flex justify-start"><div class="bg-emerald-900/10 border border-emerald-500/20 px-5 py-4 rounded-2xl rounded-tl-none shadow-xl"><b>SYSTEM:</b><br><img src="${data.data[0].url}" class="mt-3 rounded-xl shadow-2xl max-w-full md:max-w-md border border-slate-700"></div></div>`;
+                }
+            } catch (err) {
+                chat.innerHTML += `<div class="text-red-400 text-xs italic p-4">Error: ${err.message}</div>`;
+            } finally {
+                updateStatus("READY", "bg-emerald-400/10 text-emerald-400 border-emerald-500/20");
+                chat.scrollTop = chat.scrollHeight;
+            }
+        }
+    </script>
+</body>
+</html>
+
