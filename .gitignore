@@ -4,3 +4,4 @@ models/
 __pycache__/
 *.png
 *.cache
+static/generated/*

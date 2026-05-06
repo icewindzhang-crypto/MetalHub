@@ -1,13 +1,15 @@
 import gc, os, time, torch, asyncio, base64, yaml, json, psutil, socket
 from io import BytesIO
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from llama_cpp import Llama
 from stable_diffusion_cpp import StableDiffusion
 import uvicorn
 from fastapi.staticfiles import StaticFiles
-from llama_cpp.llama_chat_format import Llava15ChatHandler
+
+import signal
+import uuid
 
 app = FastAPI()
 lock = asyncio.Lock()
@@ -16,17 +18,34 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-import signal
+def force_exit_handler(sig, frame):
+    """捕捉 Ctrl+C (SIGINT)，执行最后的物理清理并强制杀掉进程"""
+    print("\n\n🛑 MetalHub 接收到关闭信号，正在执行紧急清理...")
+    try:
+        # 1. 尝试清空 GPU 显存（防止显存幽灵占用）
+        if torch.mps.is_available():
+            torch.mps.empty_cache()
+        
+        # 2. 物理清理：如果你的 UPLOAD_DIR 还有残留，这里可以做最后扫除
+        # upload_dir = os.path.join(BASE_DIR, "uploads")
+        # if os.path.exists(upload_dir):
+        #     import shutil
+        #     # 谨慎操作：仅删除临时上传文件，不删目录
+        #     for f in os.listdir(upload_dir):
+        #         os.remove(os.path.join(upload_dir, f))
+                
+        print("✅ 显存已释放，临时文件已清空。")
+    except Exception as e:
+        print(f"⚠️ 清理过程出现微小异常: {e}")
+    finally:
+        print("🚀 MetalHub 已完全停止。再见！")
+        # 关键：使用 os._exit(0) 绕过所有 Python 层的优雅等待逻辑，直接交给内核关闭
+        os._exit(0)
 
-def graceful_exit(sig, frame):
-    print("\n正在关闭 MetalHub，清理显存...")
-    # 这里可以尝试强制释放一些全局资源
-    gc.collect()
-    torch.mps.empty_cache()
-    os._exit(0)
-
-# 在 main 块中注册信号
-signal.signal(signal.SIGINT, graceful_exit) # 捕捉 Ctrl+C
+# 注册信号：Ctrl+C (SIGINT)
+signal.signal(signal.SIGINT, force_exit_handler)
+# 注册信号：终端关闭 (SIGTERM)
+signal.signal(signal.SIGTERM, force_exit_handler)
 
 
 import llama_cpp.llama_chat_format as lcf
@@ -52,6 +71,61 @@ def get_vision_specs(model_filename):
             return handler_name, chat_fmt
     # 默认兜底方案
     return "Llava15ChatHandler", "chatml"
+
+
+import fitz  # PyMuPDF
+import base64
+
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+def process_uploaded_file(file_content, filename):
+    ext = filename.split('.')[-1].lower()
+    
+    # --- 路径 A: 图像处理 (用于 Vision) ---
+    if ext in ['jpg', 'jpeg', 'png', 'webp']:
+         # 生成唯一文件名保存到本地，防止 Base64 撑爆内存
+        save_name = f"{uuid.uuid4()}.{ext}"
+        save_path = os.path.join(UPLOAD_DIR, save_name)
+        with open(save_path, "wb") as f:
+            f.write(file_content)
+
+        # 将图片转为 Base64 方便前端直接预览和后续发送
+        base64_data = base64.b64encode(file_content).decode('utf-8')
+        return {
+            "type": "image",
+            "mime": f"image/{ext if ext != 'jpg' else 'jpeg'}",
+            "data": base64_data,
+            "filename": filename,
+            "local_path": save_path 
+        }
+    
+    # --- 路径 B: 文档提取 (用于长文本) ---
+    text = ""
+    if ext == 'pdf':
+        with fitz.open(stream=file_content, filetype="pdf") as doc:
+            for page in doc:
+                text += page.get_text()
+    elif ext in ['txt', 'md', 'py', 'json', 'yaml']:
+        text = file_content.decode('utf-8', errors='ignore')
+    
+    return {
+        "type": "text",
+        "content": text,
+        "filename": filename,
+        "char_count": len(text)
+    }
+
+@app.post("/v1/files/upload")
+async def upload_file(request: Request):
+    form = await request.form()
+    file = form.get("file")
+    if not file: return {"error": "No file"}
+    
+    content = await file.read()
+    result = process_uploaded_file(content, file.filename)
+    return result
+
 
 
 # ================= 1. 硬件探测与配置加载 
@@ -163,20 +237,41 @@ class AuditManager:
 
 audit_log = AuditManager()
 
+
+@app.post("/v1/system/shutdown")
+async def shutdown():
+    # 给前端发个信号，然后杀掉自己
+    os.kill(os.getpid(), signal.SIGINT)
+    return {"message": "Shutting down..."}
+
 # ================= 监控实时流接口 =================
 @app.get("/v1/system/monitor/stream")
-async def monitor_stream():
-    """专门供前端控制台连接的 SSE 接口"""
+async def monitor_stream(request: Request):
     async def event_generator():
-        # 首次连接，发送当前所有任务
+        # 发送初始数据
         yield f"data: {json.dumps({'type': 'INIT', 'tasks': list(audit_log.active_tasks.values()), 'total': audit_log.total_tokens_all_time})}\n\n"
         
         while True:
-            # 阻塞等待队列中的新更新
-            update = await audit_log.broadcast_queue.get()
-            yield f"data: {json.dumps({'type': 'UPDATE', 'task': update, 'total': audit_log.total_tokens_all_time})}\n\n"
-            
+            # 关键：检查客户端是否已经关闭了网页或者连接已断开
+            if await request.is_disconnected():
+                print("📡 监控流客户端已断开")
+                break
+                
+            try:
+                # 给队列获取增加超时，每秒检查一次 is_disconnected
+                update = await asyncio.wait_for(audit_log.broadcast_queue.get(), timeout=1.0)
+                yield f"data: {json.dumps({'type': 'UPDATE', 'task': update, 'total': audit_log.total_tokens_all_time})}\n\n"
+            except asyncio.TimeoutError:
+                # 保持心跳，防止连接被中间网关切断
+                yield ": ping\n\n"
+                continue
+            except Exception as e:
+                print(f"📡 监控流异常: {e}")
+                break
+                
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 
 
 # 修改 main.py 中的 chat_endpoint 生成器部分
@@ -226,30 +321,93 @@ async def stream_generator(n_ctx, n_batch, model_path):
         del llm
         gc.collect()
         torch.mps.empty_cache()
+        
+        
+def scan_models(sub_dir):    
+    """通用目录扫描器"""
+    base_path = os.path.join(BASE_DIR, "models", sub_dir)
+    results = []
+    if not os.path.exists(base_path):
+        os.makedirs(base_path, exist_ok=True)
+        return results
+
+    for folder in os.listdir(base_path):
+        folder_path = os.path.join(base_path, folder)
+        if os.path.isdir(folder_path):
+            files = os.listdir(folder_path)
+            # LLM 逻辑：找 gguf，看有没有 mmproj
+            if sub_dir == "LLM":
+                main_file = next((f for f in files if f.endswith('.gguf') and "mmproj" not in f.lower()), None)
+                if main_file:
+                    has_mm = any("mmproj" in f.lower() for f in files)
+                    results.append({"id": folder, "has_vision": has_mm})
+            # GEN 逻辑：找关键组件
+            elif sub_dir == "GEN":
+                if any(f.endswith('.gguf') or f.endswith('.safetensors') for f in files):
+                    results.append({"id": folder})
+    return results
 
 # --- 在 main.py 的路由部分增加 ---
 
+
 @app.get("/v1/models")
 async def list_models():
-    """扫描 models 目录并返回 OpenAI 兼容的模型列表"""
-    model_dir = os.path.join(BASE_DIR, "models")
-    if not os.path.exists(model_dir):
-        return {"data": []}
-    
-    files = [f for f in os.listdir(model_dir) if f.endswith('.gguf')]
-    return {
-        "object": "list",
-        "data": [{"id": f, "object": "model", "created": int(time.time()), "owned_by": "metalhub"} for f in files]
-    }
+    """
+    一次性返回分类后的模型列表，供前端双下拉框使用
+    """
+    try:
+        llm_list = scan_models("LLM")
+        gen_list = scan_models("GEN")
+        
+        return {
+            "llm": llm_list,
+            "gen": gen_list,
+            "status": "success"
+        }
+    except Exception as e:
+        print(f"❌ 扫描模型目录失败: {e}")
+        return {"llm": [], "gen": [], "error": str(e)}
+
+
+from fastapi import BackgroundTasks # 导入后台任务
+
+def cleanup_temp_files(files):
+    """物理删除函数"""
+    for file_path in files:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"🗑️ 后台清理成功: {os.path.basename(file_path)}")
+        except Exception as e:
+            print(f"⚠️ 后台清理失败: {e}")
 
 @app.post("/v1/chat/completions")
-async def chat_endpoint(request: Request):
+async def chat_endpoint(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
     messages = body.get("messages", [])
+
+        # 1. 物理定位模型目录 (LM Studio 模式)
+    # 前端现在传过来的是文件夹名，如 "Qwen3.6-27B-Vision"
+    target_id = body.get("model")
+    model_root = os.path.join(BASE_DIR, "models", "LLM", target_id)
+    
+    if not os.path.exists(model_root):
+        return JSONResponse({"status": "error", "message": f"Engine path '{target_id}' not found."}, status_code=404)
+
+    
+    # 2. 扫描目录组件
+    files = os.listdir(model_root)
+    llm_path = next((os.path.join(model_root, f) for f in files if f.endswith('.gguf') and "mmproj" not in f.lower()), None)
+    mmproj_path = next((os.path.join(model_root, f) for f in files if "mmproj" in f.lower() or "adapter" in f.lower()), None)
+
+
     
     # --- 1. 恢复并增强 full_text 提取逻辑 ---
     text_parts = []
     has_image = False
+    # 用于记录本次请求涉及到的临时文件路径
+    session_files = []
+
     for m in messages:
         content = m.get("content", "")
         if isinstance(content, str):
@@ -261,8 +419,26 @@ async def chat_endpoint(request: Request):
                     text_parts.append(item.get("text", ""))
                 elif item.get("type") == "image_url":
                     has_image = True
+
+                if "local_path" in item: 
+                    session_files.append(item["local_path"])
+
     
     full_text = "".join(text_parts) # 变量回归，用于动态计算
+
+    # ================= 🛡️ 安全防御核心逻辑 =================
+    if has_image and not mmproj_path:
+        print(f"🚨 拦截非法视觉请求: {target_id} 不具备多模态能力")
+        
+        async def security_rejection():
+            error_msg = f"❌ **访问拒绝**：当前选中的模型 `{target_id}` 是纯文本引擎，不具备视觉分析能力。请在侧边栏切换至带 👁️ 图标的 Vision 模型后再试。"
+            # 兼容 OpenAI 格式返回错误，防止调用方解析报错
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': error_msg}}]})}\n\n"
+            yield "data: [DONE]\n\n"
+            
+        
+        return StreamingResponse(security_rejection(), media_type="text/event-stream")
+    # =====================================================
 
 
     # 启动审计
@@ -305,11 +481,46 @@ async def chat_endpoint(request: Request):
     rpc_nodes_cfg = config['server'].get('rpc_nodes', [])
     rpc_param, tensor_split = get_balanced_rpc_config(rpc_nodes_cfg)
 
+    import base64
+
+    def path_to_base64(file_path):
+        """将本地磁盘路径的图片转换为 Base64 Data URI"""
+        ext = file_path.split('.')[-1].lower()
+        mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
+        try:
+            with open(file_path, "rb") as f:
+                encoded_string = base64.b64encode(f.read()).decode('utf-8')
+                return f"data:{mime_type};base64,{encoded_string}"
+        except Exception as e:
+            print(f"❌ 还原 Base64 失败: {e}")
+            return None
+
     # --- 3. 定义流式生成器 (确保捕获外部变量) ---
     async def generate(n_ctx, n_batch, model_path, handler, chat_fmt, task_id): # 通过参数显式传递最稳
                # 增加信号保护，防止 CTRL+C 时产生孤儿进程
         llm = None
         try:
+            # 1. 关键修复：在推理前，遍历 messages，将 local_path 替换回 Base64
+            processed_messages = []
+            for m in messages:
+                new_msg = m.copy()
+                if isinstance(m.get("content"), list):
+                    new_content = []
+                    for item in m["content"]:
+                        if item.get("type") == "image_url":
+                            # 检查是否有之前存入的 local_path
+                            local_path = item["image_url"].get("url")
+                            print(f"open img {local_path}")
+                            # 如果 url 是一个本地路径（不以 http 或 data: 开头）
+                            if local_path and not local_path.startswith(('http', 'data:')):
+                                b64_uri = path_to_base64(local_path)
+                                if b64_uri:
+                                    new_content.append({"type": "image_url", "image_url": {"url": b64_uri}})
+                                    continue
+                        new_content.append(item)
+                    new_msg["content"] = new_content
+                processed_messages.append(new_msg)
+
             async with lock:
                 start_time = time.time()
                 
@@ -353,7 +564,7 @@ async def chat_endpoint(request: Request):
                     
                 # --- 步骤 4: 推理循环 ---
                 for chunk in llm.create_chat_completion(
-                    messages=messages, 
+                    messages=processed_messages, 
                     stream=True,
                     temperature=0.1 if has_image else 0.7, 
                     repeat_penalty=1.1, # 关键：禁用缓存重用，强制从零计算 Prompt
@@ -397,28 +608,80 @@ async def chat_endpoint(request: Request):
     # 启动生成
     selected_model = body.get("model")
     model_path = os.path.join(BASE_DIR, "models", selected_model) if selected_model else os.path.abspath(profile['llm']['path'])
+
+    # 注册后台任务：告诉 FastAPI 在响应完全发送（或关闭）后运行此函数
+    if session_files:
+        background_tasks.add_task(cleanup_temp_files, session_files)
+
     return StreamingResponse(generate(n_ctx, n_batch, model_path, handler, chat_fmt, task_id), media_type="text/event-stream")
 
-# ================= 3. 生图接口 (保持原有逻辑) =================
+
 @app.post("/v1/images/generations")
-async def image_endpoint(request: Request):
+async def image_gen_endpoint(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    target_gen_id = body.get("model") # 从前端传来的 GEN 目录下文件夹名
+    client_ip = request.client.host
+
+    # 1. 物理路径探测
+    gen_root = os.path.join(BASE_DIR, "models", "GEN", target_gen_id)
+    if not os.path.exists(gen_root):
+        return JSONResponse({"error": "Image engine not found"}, status_code=404)
+
+    # 2. 启动监控审计
+    task_id = audit_log.start_task(target_gen_id, client_ip, "IMAGE_GEN")
+
+    # 3. 显存接力与生成逻辑
     async with lock:
-        body = await request.json()
-        cfg = profile['image']
-        sd = StableDiffusion(
-            gguf_model_path=os.path.abspath(cfg['gguf_path']),
-            t5xxl_path=os.path.abspath(cfg['t5_path']),
-            vae_path=os.path.abspath(cfg['vae_path']),
-            flash_attn=True, n_threads=8
-        )
         try:
-            image = sd.txt2img(prompt=body.get("prompt",""), steps=cfg['steps'], cfg_scale=cfg['cfg_scale'])
-            buf = BytesIO(); image.save(buf, format="PNG")
-            return {"data": [{"url": f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"}]}
+            # 彻底清理 LLM 留下的显存
+            gc.collect(); torch.mps.empty_cache()
+            
+            start_time = time.time()
+            
+            # 自动锁定组件 (适应不同命名习惯)
+            files = os.listdir(gen_root)
+            model_path = next(os.path.join(gen_root, f) for f in files if f.endswith('.gguf') or f.endswith('.safetensors'))
+            
+            # 初始化 SD 引擎 (基于 stable-diffusion-cpp)
+            from stable_diffusion_cpp import StableDiffusion
+            sd = StableDiffusion(
+                diffusion_model_path="./models/GEN/z_image_turbo/z_image_turbo-Q8_0.gguf",
+                llm_path="./models/GEN/z_image_turbo/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+                vae_path="./models/GEN/z_image_turbo/ae.safetensors",
+                offload_params_to_cpu=True,
+                diffusion_flash_attn=True,
+            )
+            
+            images = sd.generate_image(
+                prompt=prompt,
+                height=1024,
+                width=512,
+                cfg_scale=1.0, # a cfg_scale of 5 is recommended for Z-Image base (non-turbo)
+            )
+            
+            # 保存到 static/generated 用于前端访问
+            os.makedirs("static/generated", exist_ok=True)
+            img_name = f"gen_{uuid.uuid4().hex}.png"
+            img_path = f"static/generated/{img_name}"
+            images[0].save(img_path)
+            
+            duration = time.time() - start_time
+            print(f"🎨 生图完成: {duration:.2f}s | Path: {img_path}")
+            
+            # 结束审计
+            audit_log.end_task(task_id, tps=0, tokens=1) # 生图任务不计 token
+            
+            return {"data": [{"url": f"/static/generated/{img_name}"}]}
+            
+        except Exception as e:
+            print(f"❌ 生图异常: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
         finally:
-            del sd
-            gc.collect()
-            torch.mps.empty_cache()
+            # 立即释放，为下一次对话腾出空间
+            if 'sd' in locals(): del sd
+            gc.collect(); torch.mps.empty_cache()
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -427,6 +690,12 @@ async def index(request: Request):
         context={"request": request, "profile": active_name}, request=request)
 
 if __name__ == "__main__":
-    print(f"DEBUG: Memory detected: {psutil.virtual_memory().total / (1024**3):.2f} GB")
+    upload_dir = os.path.join(BASE_DIR, "uploads")
+    if os.path.exists(upload_dir):
+        for f in os.listdir(upload_dir):
+            try: os.remove(os.path.join(upload_dir, f))
+            except: pass
+    print("🧹 临时上传目录已初始化")
+
     uvicorn.run(app, host="0.0.0.0", port=config['server']['port'])
 

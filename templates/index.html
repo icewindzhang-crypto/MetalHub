@@ -78,12 +78,24 @@
                 </div>
             </div>
 
-            <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-700/50">
-                <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Model Selector</label>
-                <select id="model-select" class="w-full mt-2 bg-slate-900 text-xs border border-slate-700 rounded p-2 text-blue-300 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all">
-                    <option value="">正在加载模型列表...</option>
+            <!-- 推理引擎选择 -->
+            <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-700/50 mb-3">
+                <label class="text-[9px] text-slate-500 uppercase font-black tracking-widest flex items-center gap-1">
+                    <i data-lucide="brain" class="w-3 h-3"></i> Chat Engine
+                </label>
+                <select id="llm-select" class="w-full mt-2 bg-slate-950 text-xs border border-slate-800 rounded-lg p-2 text-blue-400 focus:outline-none focus:border-blue-500 transition-all">
+                    <option>扫描 LLM 目录...</option>
                 </select>
-                <p class="text-[9px] text-slate-600 mt-2 italic"><i data-lucide="info" class="inline h-2 w-2"></i> 切换将触发模型接力</p>
+            </div>
+
+            <!-- 生图引擎选择 -->
+            <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-700/50 mb-6">
+                <label class="text-[9px] text-slate-500 uppercase font-black tracking-widest flex items-center gap-1">
+                    <i data-lucide="palette" class="w-3 h-3"></i> Image Engine
+                </label>
+                <select id="gen-select" class="w-full mt-2 bg-slate-950 text-xs border border-slate-800 rounded-lg p-2 text-emerald-400 focus:outline-none focus:border-emerald-500 transition-all">
+                    <option>扫描 GEN 目录...</option>
+                </select>
             </div>
 
             <!-- 在左侧边栏 Model Selector 下方增加会话列表区域 -->
@@ -168,14 +180,29 @@
 
         <div class="p-6 bg-gradient-to-t from-slate-950 via-slate-950 to-transparent">
             <div class="max-w-4xl mx-auto relative">
-                <!-- 在 textarea 所在 div 内部 -->
-                <div class="absolute left-3 bottom-3 flex gap-2">
-                    <button onclick="copyToClipboard(document.getElementById('input').value, this)" class="text-slate-500 hover:text-slate-300 text-[10px] uppercase font-bold">复制输入</button>
-                </div>
                 <div class="relative bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden focus-within:border-blue-500/50">
+                    <!-- 文件预览区：初始隐藏 -->
+                    <div id="file-preview-area" class="hidden px-4 py-3 bg-slate-950/50 border-b border-slate-800 flex flex-wrap gap-3">
+                        <!-- 动态生成的标签/缩略图会出现在这里 -->
+                    </div>
+
+                    <!-- 拖拽覆盖层 -->
+                    <div id="drop-overlay" class="absolute inset-0 z-40 bg-blue-500/10 border-2 border-dashed border-blue-500 rounded-2xl hidden items-center justify-center pointer-events-none">
+                        <p class="text-blue-400 font-bold flex items-center gap-2">
+                            <i data-lucide="upload-cloud"></i> 释放文件开始分析
+                        </p>
+                    </div>
+
                     <textarea id="input" rows="1" oninput="autoResize(this)" 
                         class="w-full bg-transparent pt-4 pb-4 pl-6 pr-36 focus:outline-none resize-none text-sm text-slate-200" 
-                        placeholder="输入剧本片段或绘图指令..."></textarea>
+                        placeholder="输入内容... (Enter 发送，Ctrl+Enter 换行)"></textarea>
+                    
+                        <div class="absolute left-3 bottom-3 flex gap-2 z-20">
+                            <input type="file" id="file-input" class="hidden" multiple onchange="handleFileUpload(this.files)">
+                            <button onclick="document.getElementById('file-input').click()" class="text-slate-500 hover:text-blue-400 transition p-1">
+                                <i data-lucide="paperclip" class="w-4 h-4"></i>
+                            </button>
+                        </div>
                     <div class="absolute right-3 bottom-3 flex gap-2">
                         <button onclick="send('chat')" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-black transition flex items-center gap-2">
                             <i data-lucide="zap" class="h-3 w-3"></i> CHAT
@@ -190,7 +217,31 @@
     </main>
 
     <script>
-        // --- 1. 基础变量与初始化 ---
+
+        // ================= 1. 全局变量定义 (必须在最前面) =================
+        let currentChatId = null;
+        let chatHistory = JSON.parse(localStorage.getItem('metalhub_history') || '{}');
+        let pendingFiles = []; // 确保在这里初始化
+        let monitorRetryTimer = null;
+
+
+        function setupEventListeners() {
+            const inputEl = document.getElementById('input');
+            if (inputEl) {
+                inputEl.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                        e.preventDefault();
+                        send('chat');
+                    }
+                });
+            }
+            
+            // 初始化拖拽
+            initDragAndDrop();
+            // 初始化监控
+            initMonitor();
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             lucide.createIcons();
             // 检查 marked 是否加载成功
@@ -204,15 +255,34 @@
                 headerIds: false,
                 mangle: false
             });
+
+            refreshModelLists();
+            setupEventListeners();
+
+            // 初始化会话
+            if (Object.keys(chatHistory).length === 0) createNewChat();
+            else loadChat(Object.keys(chatHistory).sort((a,b) => chatHistory[b].timestamp - chatHistory[a].timestamp)[0]);
         });
 
-        // 初始化监控连接
         function initMonitor() {
+            // 如果已经有正在重连的定时器，先清除
+            if (monitorRetryTimer) {
+                clearTimeout(monitorRetryTimer);
+                monitorRetryTimer = null;
+            }
+
+            console.log("📡 正在初始化监控流连接...");
             const eventSource = new EventSource('/v1/system/monitor/stream');
             const list = document.getElementById('monitor-list');
             const totalLabel = document.getElementById('total-tokens-served');
 
             eventSource.onmessage = (event) => {
+                // 如果收到消息，说明连接正常，确保没有任何挂起的重连任务
+                if (monitorRetryTimer) {
+                    clearTimeout(monitorRetryTimer);
+                    monitorRetryTimer = null;
+                }
+
                 const data = JSON.parse(event.data);
                 if (data.total) totalLabel.innerText = data.total.toLocaleString() + ' TOKENS';
 
@@ -221,6 +291,20 @@
                     data.tasks.forEach(task => updateTaskUI(task));
                 } else if (data.type === 'UPDATE') {
                     updateTaskUI(data.task);
+                }
+            };
+
+            eventSource.onerror = (err) => {
+                // 关键修复点 1: 立即物理关闭当前的 EventSource，阻止浏览器的 3秒默认重连
+                eventSource.close();
+                console.error("❌ 监控流已断开。后端可能正在关闭或由于显存压力崩溃。");
+
+                // 关键修复点 2: 设置 10 分钟 (600,000ms) 后再重连
+                if (!monitorRetryTimer) {
+                    console.warn("⏳ 将在 10 分钟后尝试重新建立监控...");
+                    monitorRetryTimer = setTimeout(() => {
+                        initMonitor();
+                    }, 600000); 
                 }
             };
         }
@@ -276,56 +360,77 @@
             lucide.createIcons();
         }
 
+        // 1. 初始化拖拽监听
+        function initDragAndDrop() {
+            const inputArea = document.querySelector('.relative.bg-slate-900');
+            const overlay = document.getElementById('drop-overlay');
 
-        // 页面启动时运行
-        initMonitor();
+            window.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                overlay.classList.replace('hidden', 'flex');
+            });
 
+            window.addEventListener('dragleave', (e) => {
+                // 只有离开窗口时才隐藏
+                if (e.relatedTarget === null) overlay.classList.replace('flex', 'hidden');
+            });
 
-        let currentChatId = null;
-        let chatHistory = JSON.parse(localStorage.getItem('metalhub_history') || '{}');
+            window.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                overlay.classList.replace('flex', 'hidden');
+                
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    console.log("检测到文件拖入:", files.length, "个");
+                    await handleFileUpload(files);
+                }
+            });
+        }
 
+        async function refreshModelLists() {
 
-        // --- 5. 补充：模型列表加载函数 ---
-        async function loadModelList() {
-            const select = document.getElementById('model-select');
-            const modelMetric = document.getElementById('metric-model');
-            
-            try {
+            try{
                 const res = await fetch('/v1/models');
                 const data = await res.json();
                 
-                if (!data.data || data.data.length === 0) {
-                    select.innerHTML = '<option value="">未找到 GGUF 模型</option>';
-                    modelMetric.innerText = "None";
-                    return;
-                }
+                const llmSelect = document.getElementById('llm-select');
+                const genSelect = document.getElementById('gen-select');
+                
+                // 渲染 LLM 列表
+                llmSelect.innerHTML = data.llm.map(m => 
+                    `<option value="${m.id}">${m.has_vision ? '👁️ ' : '📝 '} ${m.id}</option>`
+                ).join('');
 
-                select.innerHTML = ''; // 清空加载中提示
-                data.data.forEach((m, index) => {
-                    const opt = document.createElement('option');
-                    opt.value = m.id;
-                    opt.innerText = m.id;
-                    // 自动选中第一个，或者根据关键词匹配
-                    if (index === 0) opt.selected = true;
-                    select.appendChild(opt);
-                });
+                // 渲染 GEN 列表
+                genSelect.innerHTML = data.gen.map(m => 
+                    `<option value="${m.id}">🎨 ${m.id}</option>`
+                ).join('');
+                
+                // 记忆功能：恢复上次选择
+                restoreSelection(llmSelect, 'last_llm');
+                restoreSelection(genSelect, 'last_gen');
 
-                // 初始化顶部显示的已加载模型名
-                modelMetric.innerText = select.value;
-
-            } catch (e) {
-                console.error("加载模型列表失败:", e);
-                select.innerHTML = '<option value="">加载失败</option>';
+                document.getElementById('metric-model').innerText = llmSelect.innerHTML;
             }
+            catch (e) { console.error("加载模型列表失败", e); }
+
         }
 
-        // 确保在页面加载和点击“新对话”时都调用它
-        window.addEventListener('DOMContentLoaded', loadModelList);
+        function restoreSelection(el, key) {
+            const last = localStorage.getItem(key);
+            if (last) el.value = last;
+            el.onchange = () => localStorage.setItem(key, el.value);
+        }
 
         // 当用户手动切换下拉框时，同步更新顶部状态
-        document.getElementById('model-select').addEventListener('change', (e) => {
+        document.getElementById('llm-select').addEventListener('change', (e) => {
             document.getElementById('metric-model').innerText = e.target.value;
         });
+
+        document.getElementById('llm-select').onchange = (e) => {
+            localStorage.setItem('last_selected_model', e.target.value);
+            document.getElementById('metric-model').innerText = e.target.value;
+        };
 
         // --- 2. 会话管理逻辑 ---
         function saveHistory() {
@@ -509,21 +614,52 @@
         // --- 4. 核心发送逻辑 ---
         async function send(type) {
             const input = document.getElementById('input');
-            const val = input.value.trim();
-            if (!val) return;
+            const textVal = input.value.trim();
+            if (!textVal && pendingFiles.length === 0) return;
 
-            const selectedModel = document.getElementById('model-select').value;
+            // --- 构造消息体 ---
+            let messageContent = [];
+            let textAddon = "";
+
+            // 1. 处理文档 (合并到文本末尾)
+            pendingFiles.filter(f => f.type === 'text').forEach(f => {
+                textAddon += `\n--- FILE [${f.filename}] ---\n${f.content}\n`;
+            });
+
+            // 2. 构造 OpenAI 格式内容
+            if (pendingFiles.some(f => f.type === 'image')) {
+                // 多模态格式
+                messageContent.push({ "type": "text", "text": textVal + textAddon });
+                pendingFiles.filter(f => f.type === 'image').forEach(f => {
+                    messageContent.push({
+                        "type": "image_url",
+                        "image_url": { "url": `data:${f.mime};base64,${f.data}` }
+                    });
+                });
+            } else {
+                // 纯文本格式
+                messageContent = textVal + textAddon;
+            }
+
+            // --- 清理状态 ---
+            const finalValForUI = textVal; // 用于界面显示的简短文字
+            pendingFiles = [];
+            document.getElementById('file-preview-area').innerHTML = "";
+            document.getElementById('file-preview-area').classList.add('hidden');
+            input.value = "";
+
+            const selectedModel = document.getElementById('llm-select').value;
             const statusText = document.getElementById('status-text');
 
             // 初始标题与历史保存
             if (chatHistory[currentChatId].messages.length === 0) {
-                chatHistory[currentChatId].title = val.substring(0, 15);
+                chatHistory[currentChatId].title = textVal.substring(0, 15);
             }
-            chatHistory[currentChatId].messages.push({role: 'user', content: val});
+            chatHistory[currentChatId].messages.push({role: 'user', content: textVal});
             
             // UI 清理与渲染用户气泡
             if(document.getElementById('chat').innerText.includes("ENGINE")) document.getElementById('chat').innerHTML = "";
-            renderUserBubble(val);
+            renderUserBubble(textVal);
             input.value = "";
             autoResize(input);
             statusText.innerText = type === 'chat' ? "INFERENCING" : "GENERATING";
@@ -533,7 +669,7 @@
                     const res = await fetch('/v1/chat/completions', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ messages: [{role: "user", content: val}], stream: true, model: selectedModel })
+                        body: JSON.stringify({ messages: [{role: "user", content: messageContent}], stream: true, model: selectedModel })
                     });
 
                     const reader = res.body.getReader();
@@ -666,16 +802,44 @@
 
                 } else {
                     // 生图逻辑
-                    const res = await fetch('/v1/images/generations', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ prompt: val })
-                    });
-                    const imgData = await res.json();
-                    const imgUrl = imgData.data[0].url;
-                    document.getElementById('chat').insertAdjacentHTML('beforeend', `<div class="flex justify-start mb-6"><div class="bg-slate-900 border border-slate-800 p-2 rounded-2xl shadow-2xl"><img src="${imgUrl}" class="rounded-xl max-w-full md:max-w-md border border-slate-700"></div></div>`);
-                    chatHistory[currentChatId].messages.push({role: 'assistant', content: `<img src="${imgUrl}">`});
-                    saveHistory();
+                    const selectedGenModel = document.getElementById('gen-select').value;
+
+                    if (type === 'image') {
+                        // 渲染用户提示词
+                        renderUserBubble(textVal);
+                        input.value = "";
+                        statusText.innerText = "GENERATING IMAGE...";
+
+                        const res = await fetch('/v1/images/generations', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ 
+                                prompt: textVal, 
+                                model: selectedGenModel // 关键：传递选中的生图引擎
+                            })
+                        });
+
+                        const data = await res.json();
+                        if (data.data && data.data[0].url) {
+                            const imgUrl = data.data[0].url;
+                            document.getElementById('chat').insertAdjacentHTML('beforeend', `
+                                <div class="flex justify-start mb-6">
+                                    <div class="bg-slate-900 border border-slate-800 p-2 rounded-2xl shadow-2xl group relative">
+                                        <button onclick="copyTo('${window.location.origin + imgUrl}', this)" class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition bg-black/50 p-1.5 rounded text-white"><i data-lucide="copy" class="w-3 h-3"></i></button>
+                                        <img src="${imgUrl}" class="rounded-xl max-w-full md:max-w-md border border-slate-700">
+                                    </div>
+                                </div>`);
+                            lucide.createIcons();
+                            
+                            // 存入历史记录
+                            chatHistory[currentChatId].messages.push({
+                                role: 'assistant', 
+                                content: `![generated image](${imgUrl})`
+                            });
+                            saveHistory();
+                        }
+                    }
+
                 }
             } catch (err) {
                 document.getElementById('chat').insertAdjacentHTML('beforeend', `<div class="text-red-500 text-xs p-4 italic">Error: ${err.message}</div>`);
@@ -690,6 +854,57 @@
         else {
             const lastId = Object.keys(chatHistory).sort((a, b) => chatHistory[b].timestamp - chatHistory[a].timestamp)[0];
             loadChat(lastId);
+        }
+
+        // 2. 文件上传与预览渲染
+        async function handleFileUpload(files) {
+            const previewArea = document.getElementById('file-preview-area');
+            previewArea.classList.remove('hidden');
+
+            for (let file of files) {
+                console.log("正在处理:", file.name);
+                const formData = new FormData();
+                formData.append("file", file);
+
+                try {
+                    const res = await fetch('/v1/files/upload', { method: 'POST', body: formData });
+                    const result = await res.json();
+                    
+                    const fileId = 'file-' + Date.now() + Math.random().toString(36).substr(2,4);
+                    pendingFiles.push({ id: fileId, ...result });
+
+                    let html = "";
+                    if (result.type === 'image') {
+                        html = `
+                            <div id="${fileId}" class="relative group">
+                                <img src="data:${result.mime};base64,${result.data}" class="h-10 w-10 object-cover rounded-lg border border-slate-700 shadow-lg">
+                                <div class="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5 cursor-pointer opacity-0 group-hover:opacity-100 transition" onclick="removePendingFile('${fileId}')">
+                                    <i data-lucide="x" class="w-2 h-2 text-white"></i>
+                                </div>
+                            </div>`;
+                    } else {
+                        html = `
+                            <div id="${fileId}" class="flex items-center gap-2 bg-blue-500/10 border border-blue-500/20 px-2.5 py-1.5 rounded-lg text-[10px] text-blue-300 shadow-sm transition hover:bg-blue-500/20">
+                                <i data-lucide="file-text" class="w-3 h-3"></i>
+                                <span class="truncate max-w-[100px] font-medium">${file.name}</span>
+                                <i data-lucide="x" class="w-3 h-3 cursor-pointer hover:text-red-400 ml-1" onclick="removePendingFile('${fileId}')"></i>
+                            </div>`;
+                    }
+                    previewArea.insertAdjacentHTML('beforeend', html);
+                    lucide.createIcons(); // 刷新图标显示
+                    
+                } catch (e) {
+                    console.error("后端处理失败:", e);
+                }
+            }
+        }
+
+        function removePendingFile(fileId) {
+            document.getElementById(fileId).remove();
+            pendingFiles = pendingFiles.filter(f => f.id !== fileId);
+            if (pendingFiles.length === 0) {
+                document.getElementById('file-preview-area').classList.add('hidden');
+            }
         }
 
 
