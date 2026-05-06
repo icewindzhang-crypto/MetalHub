@@ -3,121 +3,145 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MetalHub - M1 Max AI 控制台</title>
-    <script src="https://tailwindcss.com"></script>
-    <link href="https://cloudflare.com" rel="stylesheet">
+    <title>MetalHub Cluster Console</title>
+    <!-- 使用本地化资源 -->
+    <script src="/static/tailwind.js"></script>
+    <script src="/static/lucide.js"></script>
     <style>
-        body { background-color: #0f172a; color: #f1f5f9; font-family: 'Inter', system-ui, sans-serif; }
-        .chat-container { height: calc(100vh - 180px); overflow-y: auto; scroll-behavior: smooth; }
+        body { background-color: #0f172a; color: #f1f5f9; font-family: 'Inter', sans-serif; }
+        .chat-container { height: calc(100vh - 200px); overflow-y: auto; scroll-behavior: smooth; }
         ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
-        .sidebar { transition: width 0.3s; }
-        .loading-dots:after { content: ' .'; animation: dots 1.5s steps(5, end) infinite; }
-        @keyframes dots { 0%, 20% { color: rgba(0,0,0,0); text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0); } 
-        40% { color: #60a5fa; text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0); }
-        60% { text-shadow: .25em 0 0 #60a5fa, .5em 0 0 rgba(0,0,0,0); }
-        80%, 100% { text-shadow: .25em 0 0 #60a5fa, .5em 0 0 #60a5fa; } }
+        .node-active { animation: pulse-blue 2s infinite; }
+        @keyframes pulse-blue { 0%, 100% { border-color: #3b82f6; } 50% { border-color: #1d4ed8; } }
     </style>
 </head>
 <body class="flex h-screen overflow-hidden">
 
     <!-- 左侧状态边栏 -->
-    <aside class="sidebar w-72 bg-slate-900 border-r border-slate-800 flex flex-col hidden lg:flex">
+    <aside class="w-80 bg-slate-900 border-r border-slate-800 flex flex-col hidden lg:flex">
         <div class="p-6 border-b border-slate-800">
-            <h1 class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">
-                METALHUB
+            <h1 class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400 tracking-tighter">
+                METALHUB <span class="text-xs italic font-light text-slate-500">v0.2.0</span>
             </h1>
-            <p class="text-[10px] text-slate-500 tracking-widest mt-1 uppercase">M1 Max Edition</p>
         </div>
         
-        <div class="p-6 flex-1 space-y-6">
+        <div class="p-6 flex-1 space-y-6 overflow-y-auto">
+            <!-- 状态 -->
             <div>
-                <label class="text-[10px] text-slate-500 uppercase font-bold tracking-tighter">System Status</label>
-                <div id="status-badge" class="mt-2 flex items-center gap-2 text-emerald-400 bg-emerald-400/10 px-3 py-2 rounded-lg border border-emerald-500/20">
-                    <span class="relative flex h-2 w-2">
-                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                    </span>
-                    <span id="status-text" class="text-xs font-bold uppercase tracking-wider">Ready</span>
+                <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Engine Status</label>
+                <div id="status-badge" class="mt-2 flex items-center gap-2 text-emerald-400 bg-emerald-400/5 px-3 py-2 rounded-lg border border-emerald-500/20">
+                    <i data-lucide="activity" class="h-3 w-3"></i>
+                    <span id="status-text" class="text-xs font-bold uppercase">Ready</span>
                 </div>
             </div>
 
-            <div class="space-y-3">
-                <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-700/50 shadow-inner">
-                    <label class="text-[10px] text-slate-500 uppercase">Active Profile</label>
-                    <div class="text-sm font-bold mt-1 text-blue-400 flex items-center gap-2">
-                        <i class="fas fa-sliders-h"></i> {{ profile }}
-                    </div>
-                </div>
-                
-                <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-700/50 shadow-inner">
-                    <label class="text-[10px] text-slate-500 uppercase">Unified Memory</label>
-                    <div class="text-sm font-bold mt-1 text-slate-300">64GB / 400GB/s</div>
+            <!-- 动态 Profile 变量 -->
+            <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-700/50">
+                <label class="text-[10px] text-slate-500 uppercase">Active Profile</label>
+                <div class="text-sm font-bold mt-1 text-blue-400 flex items-center gap-2">
+                    <i data-lucide="layers" class="h-4 w-4"></i> 
+                    <!-- Jinja2 变量渲染 -->
+                    <span id="active-profile-name">{{ profile }}</span>
                 </div>
             </div>
 
-            <div class="pt-4 border-t border-slate-800">
-                <label class="text-[10px] text-slate-500 uppercase">Model Registry</label>
-                <ul class="mt-2 space-y-2 text-xs">
-                    <li class="flex items-center gap-2 text-slate-400"><i class="fas fa-check-circle text-blue-500"></i> Qwen3.6-27B-GGUF</li>
-                    <li class="flex items-center gap-2 text-slate-400"><i class="fas fa-check-circle text-emerald-500"></i> Z-Image-Turbo</li>
-                </ul>
+            <!-- 在左侧边栏“Active Profile”下方增加 -->
+            <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-700/50">
+                <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Model Selector</label>
+                <select id="model-select" class="w-full mt-2 bg-slate-900 text-xs border border-slate-700 rounded p-2 text-blue-300 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all">
+                    <option value="">正在扫描 models/ 目录...</option>
+                </select>
+                <p class="text-[9px] text-slate-600 mt-2 italic"><i data-lucide="info" class="inline h-2 w-2"></i> 切换将触发显存重新分配</p>
+            </div>
+
+            <script>
+                // 页面加载时自动获取模型列表
+                async function loadModelList() {
+                    const res = await fetch('/v1/models');
+                    const data = await res.json();
+                    const select = document.getElementById('model-select');
+                    select.innerHTML = '';
+                    data.data.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.innerText = m.id;
+                        // 默认选中当前 Profile 里的模型
+                        if (m.id.includes("27B")) opt.selected = true; 
+                        select.appendChild(opt);
+                    });
+                }
+                loadModelList();
+
+                // 在 send 函数中获取当前选择的模型
+                async function send(type) {
+                    const selectedModel = document.getElementById('model-select').value;
+                    // ... 在 fetch 的 body 中加入 model: selectedModel
+                }
+            </script>
+
+            <!-- 集群节点实时监控 (核心修正点) -->
+            <div>
+                <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Cluster Distribution</label>
+                <div id="nodes-container" class="mt-2 space-y-3">
+                    <p class="text-[10px] text-slate-600 italic">等待推理任务以分配负载...</p>
+                </div>
             </div>
         </div>
         
-        <div class="p-6 text-[10px] text-slate-600 font-mono">
-            v1.0.0-alpha | Localhost:11434
+        <div class="p-6 text-[10px] text-slate-600 border-t border-slate-800">
+            <i data-lucide="network" class="h-3 w-3 inline mr-1"></i> Distributed Engine Active
         </div>
     </aside>
 
     <!-- 右侧主界面 -->
     <main class="flex-1 flex flex-col relative bg-slate-950">
-        <!-- 顶部实时监控 -->
         <header class="h-16 border-b border-slate-800/50 flex items-center justify-between px-8 bg-slate-900/30 backdrop-blur-xl z-10">
-            <div class="flex gap-6 items-center">
+            <div class="flex gap-8 items-center">
                 <div class="flex flex-col">
                     <span class="text-[10px] text-slate-500 uppercase">Throughput</span>
-                    <span id="metric-tps" class="text-sm font-mono text-blue-400 font-bold">-- t/s</span>
+                    <span id="metric-tps" class="text-sm font-mono text-blue-400 font-black">-- t/s</span>
                 </div>
-                <div class="h-8 w-px bg-slate-800"></div>
-                <div class="flex flex-col">
-                    <span class="text-[10px] text-slate-500 uppercase">Context</span>
-                    <span id="metric-ctx" class="text-sm font-mono text-slate-300 font-bold">--</span>
-                </div>
-                <div class="h-8 w-px bg-slate-800"></div>
                 <div class="flex flex-col">
                     <span class="text-[10px] text-slate-500 uppercase">Processing</span>
-                    <span id="metric-pp" class="text-sm font-mono text-emerald-400 font-bold">-- ms</span>
+                    <span id="metric-pp" class="text-sm font-mono text-emerald-400 font-black">-- ms</span>
+                </div>
+                <div class="flex flex-col">
+                    <span class="text-[10px] text-slate-500 uppercase">Current Ctx</span>
+                    <span id="metric-ctx" class="text-sm font-mono text-amber-400 font-black">--</span>
                 </div>
             </div>
-            <button onclick="clearChat()" class="text-slate-500 hover:text-red-400 transition-colors"><i class="fas fa-sync-alt"></i></button>
+            <!-- 在 metric-pp 后面增加 -->
+            <div class="h-8 w-px bg-slate-800"></div>
+            <div class="flex flex-col">
+                <span class="text-[10px] text-slate-500 uppercase">Loaded Model</span>
+                <span id="metric-model" class="text-xs font-mono text-slate-400 font-bold truncate max-w-[120px]">None</span>
+            </div>
+
+            <button onclick="location.reload()" class="text-slate-500 hover:text-red-400 transition-colors"><i data-lucide="rotate-ccw" class="h-4 w-4"></i></button>
         </header>
 
-        <!-- 聊天流 -->
         <div id="chat" class="chat-container p-8 space-y-8">
-            <div class="flex flex-col items-center justify-center h-full text-slate-700 opacity-50">
-                <i class="fas fa-bolt text-5xl mb-4"></i>
-                <p class="text-lg font-medium">MetalHub Engine Active</p>
-                <p class="text-sm">Ready for 27B LLM Inference and Image Generation</p>
+            <div class="text-center mt-20 opacity-20">
+                <i data-lucide="bot" class="h-16 w-16 mx-auto mb-4"></i>
+                <p class="text-xl font-black italic">METALHUB ENGINE</p>
+                <p class="text-sm">M1 Max 64GB Unified Memory Relay</p>
             </div>
         </div>
 
-        <!-- 输入控制区 -->
-        <div class="p-6 bg-gradient-to-t from-slate-950 to-transparent">
-            <div class="max-w-4xl mx-auto relative group">
-                <div class="absolute inset-0 bg-blue-500/5 blur-2xl rounded-full pointer-events-none group-focus-within:bg-blue-500/10 transition"></div>
-                
-                <div class="relative bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden focus-within:border-blue-500/50 transition-all">
+        <div class="p-6 bg-gradient-to-t from-slate-950 via-slate-950 to-transparent">
+            <div class="max-w-4xl mx-auto relative">
+                <div class="relative bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden focus-within:border-blue-500/50">
                     <textarea id="input" rows="1" oninput="autoResize(this)" 
-                        class="w-full bg-transparent pt-4 pb-4 pl-6 pr-32 focus:outline-none resize-none text-sm text-slate-200" 
-                        placeholder="输入提示词或生图指令..."></textarea>
+                        class="w-full bg-transparent pt-4 pb-4 pl-6 pr-36 focus:outline-none resize-none text-sm text-slate-200" 
+                        placeholder="输入内容进行推理或绘图..."></textarea>
                     
                     <div class="absolute right-3 bottom-3 flex gap-2">
                         <button onclick="send('chat')" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-black transition flex items-center gap-2">
-                            <i class="fas fa-paper-plane"></i> CHAT
+                            <i data-lucide="message-square" class="h-3 w-3"></i> CHAT
                         </button>
                         <button onclick="send('image')" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-xs font-black transition flex items-center gap-2">
-                            <i class="fas fa-paint-brush"></i> DRAW
+                            <i data-lucide="image" class="h-3 w-3"></i> DRAW
                         </button>
                     </div>
                 </div>
@@ -126,47 +150,114 @@
     </main>
 
     <script>
+        // 初始化 Lucide 图标
+        lucide.createIcons();
+
         function autoResize(textarea) {
             textarea.style.height = 'auto';
-            textarea.style.height = (Math.min(textarea.scrollHeight, 250)) + 'px';
+            textarea.style.height = (Math.min(textarea.scrollHeight, 200)) + 'px';
         }
 
-        function clearChat() { location.reload(); }
-
-        function updateStatus(text, colorClass) {
-            const badge = document.getElementById('status-badge');
-            const statusText = document.getElementById('status-text');
-            statusText.innerText = text;
-            badge.className = `mt-2 flex items-center gap-2 px-3 py-2 rounded-lg border ${colorClass}`;
+        // 动态更新集群节点 UI
+        function updateClusterNodes(nodeInfo) {
+            const container = document.getElementById('nodes-container');
+            if (!nodeInfo || nodeInfo.length === 0) return;
+            
+            container.innerHTML = ''; // 清除占位符
+            nodeInfo.forEach(node => {
+                const pct = (node.ratio * 100).toFixed(1);
+                const statusColor = node.active ? 'text-blue-400' : 'text-slate-600';
+                const barColor = node.active ? 'bg-blue-500' : 'bg-slate-700';
+                
+                const nodeHtml = `
+                    <div class="bg-slate-800/60 border border-slate-700 p-3 rounded-xl transition-all">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-[10px] font-mono ${statusColor}">${node.host}</span>
+                            <span class="text-[10px] font-bold text-slate-400">${pct}%</span>
+                        </div>
+                        <div class="w-full bg-slate-900 h-1 rounded-full overflow-hidden">
+                            <div class="h-full ${barColor} transition-all duration-1000" style="width: ${pct}%"></div>
+                        </div>
+                    </div>
+                `;
+                container.insertAdjacentHTML('beforeend', nodeHtml);
+            });
         }
 
+        // 1. 页面加载时请求模型列表
+        async function loadModels() {
+            try {
+                const res = await fetch('/v1/models');
+                const data = await res.json();
+                const select = document.getElementById('model-select');
+                select.innerHTML = '';
+                data.data.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.innerText = m.id;
+                    // 自动选中你之前在 config 里定义的那个文件名（如果匹配）
+                    if(m.id.toLowerCase().includes('27b')) opt.selected = true;
+                    select.appendChild(opt);
+                });
+            } catch (e) { console.error("无法获取模型列表"); }
+        }
+        loadModels();
+
+        // 2. 在 send 函数中提取选中的模型并发送
         async function send(type) {
+            const modelSelect = document.getElementById('model-select');
+            const selectedModel = modelSelect.value;
+
             const input = document.getElementById('input');
             const chat = document.getElementById('chat');
             const val = input.value.trim();
             if (!val) return;
 
-            if(chat.innerText.includes("Active")) chat.innerHTML = "";
-            chat.innerHTML += `<div class="flex justify-end"><div class="bg-slate-800 border border-slate-700 px-4 py-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm shadow-lg text-slate-200">${val.replace(/\n/g, '<br>')}</div></div>`;
+            if(chat.innerText.includes("ENGINE")) chat.innerHTML = "";
+            chat.innerHTML += `<div class="flex justify-end"><div class="bg-blue-600/10 border border-blue-500/20 px-4 py-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm text-slate-300 shadow-lg">${val}</div></div>`;
             input.value = "";
             autoResize(input);
             chat.scrollTop = chat.scrollHeight;
 
-            updateStatus(type === 'chat' ? "INFERENCING" : "GENERATING", "bg-amber-400/10 text-amber-400 border-amber-500/20");
+            // 更新状态灯
+            const badge = document.getElementById('status-badge');
+            badge.className = "mt-2 flex items-center gap-2 text-amber-400 bg-amber-400/5 px-3 py-2 rounded-lg border border-amber-500/20";
+            document.getElementById('status-text').innerText = type === 'chat' ? "INFERENCING" : "GENERATING";
 
             try {
                 if (type === 'chat') {
                     const res = await fetch('/v1/chat/completions', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ messages: [{role: "user", content: val}], stream: true })
+                        body: JSON.stringify({ messages: [{role: "user", content: val}], stream: true,
+                            model: selectedModel // 将选中的模型名发给后端
+                         })
                     });
+
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    
+                    let aiMsgId = 'ai-' + Date.now();
+                    // 初始气泡，带有一个“思考中”的样式
+                    chat.innerHTML += `
+                        <div class="flex justify-start">
+                            <div id="${aiMsgId}" class="bg-slate-900 border border-slate-800 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm shadow-2xl">
+                                <div id="${aiMsgId}-thought" class="text-xs text-blue-400 italic mb-2 animate-pulse">
+                                    <i data-lucide="loader" class="h-3 w-3 inline mr-1"></i> 准备中...
+                                </div>
+                                <div id="${aiMsgId}-content" class="text-slate-200"></div>
+                            </div>
+                        </div>`;
+                    lucide.createIcons(); // 刷新图标
+
+                    const contentDiv = document.getElementById(aiMsgId + "-content");
+                    const thoughtDiv = document.getElementById(aiMsgId + "-thought");
                     
                     const reader = res.body.getReader();
                     const decoder = new TextDecoder();
                     let aiMsgId = 'ai-' + Date.now();
-                    chat.innerHTML += `<div class="flex justify-start"><div id="${aiMsgId}" class="bg-blue-600/10 border border-blue-500/20 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm leading-relaxed shadow-xl text-blue-50"><b>AI:</b><br></div></div>`;
-                    const aiContainer = document.getElementById(aiMsgId);
+                    chat.innerHTML += `<div class="flex justify-start"><div id="${aiMsgId}" class="bg-slate-900 border border-slate-800 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm leading-relaxed shadow-2xl text-slate-200"></div></div>`;
+                    const container = document.getElementById(aiMsgId);
 
                     while (true) {
                         const {done, value} = await reader.read();
@@ -176,18 +267,54 @@
                         
                         for (const line of lines) {
                             if (!line.trim() || line === 'data: [DONE]') continue;
-                            const data = JSON.parse(line.replace('data: ', ''));
+
+                               try {
+                                    const jsonStr = line.replace('data: ', '');
+                                    const data = JSON.parse(jsonStr);
+                                    
+                                    // 1. 安全处理指标包 (第一包或最后一包)
+                                    if (data.extra) {
+                                        if (data.extra.tps) document.getElementById('metric-tps').innerText = data.extra.tps + ' t/s';
+                                        if (data.extra.processing_ms) document.getElementById('metric-pp').innerText = data.extra.processing_ms + ' ms';
+                                        if (data.extra.n_ctx) document.getElementById('metric-ctx').innerText = data.extra.n_ctx;
+                                        if (data.extra.active_model) document.getElementById('metric-model').innerText = data.extra.active_model;
+                                        if (data.extra.node_info) updateClusterNodes(data.extra.node_info);
+
+                                        const ex = data.extra;
+                                        // 更新进度条和状态文字
+                                        if (ex.status === 'PROCESSING_PROMPT') {
+                                            thoughtDiv.innerHTML = `<i data-lucide="cpu" class="h-3 w-3 inline mr-1"></i> ${ex.msg} (耗时: ${ex.processing_ms}ms)`;
+                                            lucide.createIcons();
+                                        }
+                                        if (ex.status === 'GENERATING') {
+                                            // 关键：开始生成结果，移除思考层
+                                            thoughtDiv.remove(); 
+                                        }
+                                        // 更新顶部指标
+                                        if (ex.tps) document.getElementById('metric-tps').innerText = ex.tps + ' t/s';
+                                        if (ex.total_tokens) {
+                                            contentDiv.innerHTML += `<div class="mt-4 pt-2 border-t border-slate-800 text-[10px] text-slate-500 italic">
+                                                统计: 生成 ${ex.total_tokens} tokens | 用时 ${ex.gen_time}s
+                                            </div>`;
+                                        }
+                                    }
+
+                                    // 关键：处理后端传来的动态指标和节点信息
+                                    if (data.extra && data.extra.active_model) {
+                                        document.getElementById('metric-model').innerText = data.extra.active_model;
+                                    }
+
+                                    
+                                    // 2. 安全处理内容包 (中间的推理包)
+                                    // 增加数据结构存在性检查
+                                    if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+                                        container.innerHTML += data.choices[0].delta.content.replace(/\n/g, '<br>');
+                                        chat.scrollTop = chat.scrollHeight;
+                                    }
+                                } catch (e) { 
+                                    console.warn("跳过非JSON行或解析错误:", line); 
+                                }
                             
-                            if (data.extra) {
-                                if(data.extra.tps) document.getElementById('metric-tps').innerText = data.extra.tps + ' t/s';
-                                if(data.extra.n_ctx) document.getElementById('metric-ctx').innerText = data.extra.n_ctx;
-                                if(data.extra.processing_ms) document.getElementById('metric-pp').innerText = data.extra.processing_ms + ' ms';
-                            }
-                            
-                            if (data.choices && data.choices[0].delta.content) {
-                                aiContainer.innerHTML += data.choices[0].delta.content.replace(/\n/g, '<br>');
-                                chat.scrollTop = chat.scrollHeight;
-                            }
                         }
                     }
                 } else {
@@ -197,16 +324,16 @@
                         body: JSON.stringify({ prompt: val })
                     });
                     const data = await res.json();
-                    chat.innerHTML += `<div class="flex justify-start"><div class="bg-emerald-900/10 border border-emerald-500/20 px-5 py-4 rounded-2xl rounded-tl-none shadow-xl"><b>SYSTEM:</b><br><img src="${data.data[0].url}" class="mt-3 rounded-xl shadow-2xl max-w-full md:max-w-md border border-slate-700"></div></div>`;
+                    chat.innerHTML += `<div class="flex justify-start"><div class="bg-slate-900 border border-slate-800 p-2 rounded-2xl shadow-2xl"><img src="${data.data.url}" class="rounded-xl max-w-full md:max-w-md"></div></div>`;
                 }
             } catch (err) {
-                chat.innerHTML += `<div class="text-red-400 text-xs italic p-4">Error: ${err.message}</div>`;
+                chat.innerHTML += `<div class="text-red-500 text-xs italic p-4">Error: ${err.message}</div>`;
             } finally {
-                updateStatus("READY", "bg-emerald-400/10 text-emerald-400 border-emerald-500/20");
+                badge.className = "mt-2 flex items-center gap-2 text-emerald-400 bg-emerald-400/5 px-3 py-2 rounded-lg border border-emerald-500/20";
+                document.getElementById('status-text').innerText = "READY";
                 chat.scrollTop = chat.scrollHeight;
             }
         }
     </script>
 </body>
 </html>
-

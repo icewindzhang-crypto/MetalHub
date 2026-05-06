@@ -1,6 +1,13 @@
 server:
   port: 11434
-  active_profile: "auto"
+  active_profile: auto
+  rpc_nodes: 
+    - host: "192.168.1.10:50052" # 示例旧机器1
+      vram_gb: 12
+      weight: 1.2
+    - host: "192.168.1.11:50052" # 示例旧机器2
+      vram_gb: 8
+      weight: 0.5
 
 profiles:
   low_end:
@@ -20,7 +27,6 @@ profiles:
     image:
       gguf_path: "./models/z_image_turbo-Q8_0.gguf"
       t5_path: "./models/Qwen3-4B-Instruct-Q4_K_M.gguf"
-      vae_path: "./models/sdxl_vae.safetensors"
+      vae_path: "./models/ae.safetensors"
       steps: 4
       cfg_scale: 1.0
-

@@ -1,117 +1,157 @@
-# 🚀 MetalHub
+# 🚀 MetalHub v0.2.0
 
-**MetalHub** 是一个专为 Apple Silicon (M1/M2/M3) 架构设计的全能本地 AI 引擎。它通过独创的“显存接力”技术，实现了在大参数语言模型（LLM）与高质量生图模型（SDXL）之间的秒级切换，让你的 Mac 成为真正的全能 AI 工作站。
+**MetalHub** 是一个专为 Apple Silicon (M1/M2/M3) 架构设计的全能本地 AI 引擎。通过独创的“显存接力”与“分布式集群”技术，它能唤醒你家中所有的旧硬件（Mac, Windows, Linux），共同构建一个强大的异构 AI 算力中心。
+
+我们的愿景是：**打破显存霸权，让每一台被遗忘的旧设备都能在 AI 时代焕发第二春。**
 
 ---
 
 ## ✨ 核心特性
 
-- **🍎 深度优化**：基于 Metal 框架编译，原生压榨 M1/M2/M3 Max 内存带宽性能。
-- **🔄 显存接力 (VRAM Relay)**：100% 物理释放 Metal 缓存，确保 27B 规模 LLM 与 SDXL Turbo 模型在同一台设备上串行流转，互不干扰。
-- **🧠 智能预设 (Auto-Profile)**：启动时自动感知统一内存大小，智能推荐并加载最适合当前硬件的模型参数。
-- **⚡ 动态上下文**：根据输入文本长度实时调整 `n_ctx`。短文本秒开，长文本（支持 40K+）不丢记忆。
-- **🎨 兼容性**：完美适配 OpenAI API 协议（包含 `/v1/chat/completions` 流式输出与 `/v1/images/generations`）。
-- **📊 实时监控**：自带监控控制台，实时显示 TPS（生成速度）、Processing（预处理延迟）及内存状态。
+- **🍎 极致单机优化**：针对 M1 Max 400GB/s 带宽深度调优，27B 模型推理可达 27+ t/s。
+- **🌐 异构集群分布式 (Cluster)**：通过 RPC 协议将旧 Intel Mac、Windows 台式机、Linux 服务器串联，共享显存处理超大模型（如 70B）。
+- **⚖️ 智能负载均衡**：根据集群内各代硬件的显存容量与性能系数，自动按比例分配模型层数。
+- **🛡️ 节点热自愈**：实时探测远程节点状态。若从机掉线，系统自动无损降级至本地模式，确保服务永不断线。
+- **🔄 显存接力 (VRAM Relay)**：精准释放 Metal 缓存，实现 27B LLM 与 SDXL 绘图引擎的毫秒级切换。
+- **⚡ 动态上下文引擎**：根据输入长度自动调整 `n_ctx` (8K-64K)，兼顾响应速度与深度记忆。
+- **📊 实时监控台**：可视化集群看板，实时显示每个节点的负载比例、TPS 及预处理延迟。
 
 ---
 
-## 🛠️ 环境准备
+## 🛠️ 项目目录结构
 
-### 1. 硬件要求
-- **推荐**：Apple M-系列芯片 (M1 Max / M2 Ultra 等)，64GB 或以上统一内存。
-- **最低**：8GB 内存 (自动进入 `low_end` 模式)。
-
-### 2. 系统依赖
-在安装 Python 依赖前，请确保系统已安装 `cmake` 和 `llvm`：
-```bash
-brew install cmake llvm libomp
+```text
+MetalHub/
+├── main.py              # FastAPI 核心引擎（支持流式/分布式/自愈）
+├── config.yaml          # 核心配置文件（Profile 与 集群节点定义）
+├── models/              # 模型存放目录（GGUF 权重管理）
+├── templates/           # 前端 UI (Jinja2 模板)
+├── docs/                # 详细部署文档
+└── pyproject.toml       # uv 环境配置
 ```
 
 ---
 
-## 📥 快速安装
+## 📥 快速安装 (macOS)
 
-我们推荐使用 [uv](https://github.com) 进行高效的依赖管理。
+推荐使用 [uv](https://github.com) 管理环境。
 
 ```bash
-# 1. 克隆项目
+# 1. 环境预准备
+brew install cmake llvm libomp
+
+# 2. 克隆并安装 (强制开启 Metal 加速并解决 OpenMP 冲突)
 git clone https://github.com
 cd MetalHub
-
-# 2. 初始化环境并从源码编译 (开启 Metal 加速)
-# 注意：我们关闭了 OpenMP 以避免 macOS 上的编译冲突，性能由 Metal 保证
 export CMAKE_ARGS="-DGGML_METAL=ON -DSD_METAL=ON -DGGML_OPENMP=OFF"
 uv venv
-uv pip install fastapi uvicorn llama-cpp-python stable-diffusion-cpp-python pyyaml psutil torch pillow Jinja2
+
+### 2. 深度安装 (解决 libwebm 编译报错)
+
+由于 `stable-diffusion.cpp` 包含复杂的子模块（如 libwebm），直接通过 `uv add` 可能会失败。请按以下步骤手动编译：
+
+```bash
+# 克隆并拉取完整子模块
+git clone --recursive https://github.com
+cd stable-diffusion-cpp-python
+
+# 针对 Apple Silicon 设置编译环境
+# 注意：我们显式关闭了可能引起报错的组件，并强制开启 Metal
+export CMAKE_ARGS="-DSD_METAL=ON -DGGML_METAL=ON -DGGML_OPENMP=OFF"
+
+# 使用 uv 在当前环境中安装此本地目录
+uv pip install . --no-cache-dir
 ```
 
 ---
 
-## 📂 模型管理
+### 2. 为什么这样做能解决问题？
+1. **`--recursive`**: 这是关键。它会把 `vendor/stable-diffusion.cpp/thirdparty/libwebm` 里的所有 `.cmake` 配置文件完整拉取下来，解决你遇到的 `include could not find requested file` 报错。
+2. **`--no-cache-dir`**: 强制重新编译。你之前的失败尝试可能会在 `uv` 缓存中留下半成品，这个参数确保从零开始构建。
+3. **`-DGGML_OPENMP=OFF`**: 继续保持关闭 OpenMP，以适配 macOS 原生 Clang。
 
-请将下载好的 GGUF 模型放入 `./models/` 目录下。
+### 3. 项目维护者建议
+为了让 **MetalHub** 更加“开箱即用”，你可以写一个简单的 `setup.sh` 脚本放在项目根目录：
 
-### 推荐组合：
-- **LLM**: [Qwen3.6-27B-Instruct-GGUF](https://huggingface.co)
-- **Image**: [Z-Image-Turbo-GGUF](https://huggingface.co)
-- **Text Encoder**: [Qwen3-4B-Instruct-GGUF](https://huggingface.co)
-- **VAE**: [sdxl_vae.safetensors](https://huggingface.co)
+```bash
+#!/bin/bash
+echo "🚀 开始安装 MetalHub 生产环境..."
+brew install cmake llvm libomp
+
+# 处理生图组件
+if [ ! -d "stable-diffusion-cpp-python" ]; then
+    git clone --recursive https://github.com
+fi
+
+export CMAKE_ARGS="-DSD_METAL=ON -DGGML_METAL=ON -DGGML_OPENMP=OFF"
+uv pip install ./stable-diffusion-cpp-python --no-cache-dir
+uv pip install fastapi uvicorn llama-cpp-python pyyaml psutil torch pillow Jinja2
+echo "✅ 安装完成！请在 models/ 放入模型后运行 uv run python main.py"
+```
+
+这样用户只需要运行 `sh setup.sh` 就能自动处理复杂的编译逻辑。
+
+**现在的手动编译过程中，`libwebm` 的报错消失了吗？如果编译成功，你的 MetalHub 就真正打通了 GGUF 生图的最后一公里。**
+
+```
 
 ---
 
-## ⚙️ 配置说明
+## ⚙️ 配置文件 (config.yaml)
 
-编辑项目根目录下的 `config.yaml`：
+您可以根据硬件规格自由配置。`active_profile: "auto"` 将开启自动硬件探测。
+
 ```yaml
 server:
   port: 11434
-  active_profile: "auto" # 可选 "auto", "high_end", "mid_range", "low_end"
+  active_profile: "auto"
+  rpc_nodes: # 分布式节点配置
+    - host: "192.168.1.10:50052" # Windows/Linux 从机
+      vram_gb: 12                # 显存容量
+      weight: 1.2                # 性能权重
+    - host: "192.168.1.11:50052" # 旧 Intel Mac
+      vram_gb: 8
+      weight: 0.5
 
 profiles:
-  high_end:
+  high_end: # 针对 64GB+ 内存环境
     llm:
       path: "./models/Qwen3.6-27B-Q4_K_M.gguf"
       n_ctx_limit: 65536
-      n_batch: 4096 # M1 Max 400GB/s 带宽优化
+      n_batch: 4096
     image:
       gguf_path: "./models/z_image_turbo-Q8_0.gguf"
       t5_path: "./models/Qwen3-4B-Instruct-Q4_K_M.gguf"
       vae_path: "./models/sdxl_vae.safetensors"
       steps: 4
-      cfg_scale: 1.0
 ```
 
 ---
 
-## 🚀 启动与使用
+## 🚀 运行与测试
 
-### 1. 运行引擎
-```bash
-uv run python main.py
-```
-
-### 2. 交互测试
-打开浏览器访问：`http://localhost:11434`
-
-### 3. API 对接
-你可以将 **Claude Code**, **LobeChat**, **NextChat** 等客户端的 API Base 指向：
-`http://localhost:11434/v1`
+1. **放置模型**：将 GGUF 文件放入 `./models/` 目录。
+2. **启动引擎**：`uv run python main.py`
+3. **访问交互页面**：`http://localhost:11434`
+4. **API 对接**：支持标准 OpenAI 协议，Base URL 为 `http://localhost:11434/v1`。
 
 ---
 
-## 🗺️ Roadmap (近期开发计划)
-- [ ] **Streaming (SSE)**: 实现更流畅的流式字符输出响应。 (正在进行中)
-- [ ] **Multi-Modal**: 集成 Whisper 语音识别与视觉理解能力。
-- [ ] **Task Queue**: 引入请求队列，支持更稳健的并发管理。
-- [ ] **Auto-Downloader**: 增加模型一键下载与校验功能。
-- [ ] **GUI Wrapper**: 为非开发者提供更友好的图形启动界面。
+## 🗺️ Roadmap
 
-
-## 🤝 贡献与反馈
-本项目目前处于 Alpha 阶段。欢迎提交 Issue 或 Pull Request，一起构建 Apple Silicon 上最强的 AI 枢纽。
+- [x] **Streaming (SSE)**: 流式字符实时输出。
+- [x] **Cluster Load Balancing**: 多节点显存比例自动分配。
+- [ ] **Unified Vision**: 接入 Qwen2-VL 实现本地视觉理解。
+- [ ] **Whisper Integration**: 集成实时语音转文字。
+- [ ] **Auto-Installer**: 一键式模型环境安装脚本。
 
 ---
 
-## ⚖️ 开源协议
-MIT License
+## 🤝 贡献
 
+我们欢迎所有希望“复活旧硬件”的开发者加入。如果你有关于分布式计算、模型量化或 Metal 优化的建议，请提交 PR。
+
+**让 AI 回归大众，让硬件重获新生。**
+
+---
+[MIT License](LICENSE)
