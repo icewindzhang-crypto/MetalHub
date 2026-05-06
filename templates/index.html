@@ -6,8 +6,21 @@
     <title>MetalHub Cluster Console</title>
     <script src="/static/tailwind.js"></script>
     <script src="/static/lucide.js"></script>
-    <script src="https://jsdelivr.net"></script>
+    <script src="/static/marked.js"></script>
     <style>
+        /* 代码块容器 */
+        .markdown-body pre { position: relative; padding-top: 2.5rem; }
+        /* 复制按钮 */
+        .copy-btn {
+            position: absolute; top: 0.5rem; right: 0.5rem;
+            padding: 0.25rem 0.5rem; font-size: 10px;
+            background: #334155; color: #cbd5e1; border-radius: 4px;
+            border: 1px solid #475569; cursor: pointer; transition: all 0.2s;
+        }
+        .copy-btn:hover { background: #475569; color: #fff; }
+        /* 警示语样式 */
+        .code-warning { font-size: 10px; color: #94a3b8; padding: 0.5rem 1rem; background: #1e293b; border-top: 1px solid #334155; font-style: italic; }
+
         /* Markdown 样式微调 */
         .markdown-body pre { background: #0f172a; padding: 1rem; border-radius: 0.75rem; overflow-x: auto; border: 1px solid #1e293b; margin: 0.5rem 0; }
         .markdown-body code { font-family: 'JetBrains Mono', monospace; color: #93c5fd; font-size: 0.85rem; }
@@ -17,6 +30,10 @@
         .markdown-body h1, .markdown-body h2 { color: #60a5fa; font-weight: bold; margin-top: 1rem; }
     </style>
     <style>
+        .history-item .lucide-trash-2:hover {
+            color: #ef4444 !important; /* 鲜艳的红色 */
+            transform: scale(1.1);
+        }
         body { background-color: #0f172a; color: #f1f5f9; font-family: 'Inter', sans-serif; }
         .chat-container { height: calc(100vh - 200px); overflow-y: auto; scroll-behavior: smooth; }
         ::-webkit-scrollbar { width: 4px; }
@@ -24,6 +41,7 @@
         .node-active { animation: pulse-blue 2s infinite; }
         @keyframes pulse-blue { 0%, 100% { border-color: #3b82f6; } 50% { border-color: #1d4ed8; } }
     </style>
+    
 </head>
 <body class="flex h-screen overflow-hidden">
 
@@ -83,8 +101,6 @@
                 .history-item { cursor: pointer; transition: all 0.2s; border: 1px solid transparent; }
                 .history-item:hover { background-color: #1e293b; }
             </style>
-
-
             <div>
                 <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Cluster Distribution</label>
                 <div id="nodes-container" class="mt-2 space-y-3">
@@ -128,11 +144,14 @@
 
         <div class="p-6 bg-gradient-to-t from-slate-950 via-slate-950 to-transparent">
             <div class="max-w-4xl mx-auto relative">
+                <!-- 在 textarea 所在 div 内部 -->
+                <div class="absolute left-3 bottom-3 flex gap-2">
+                    <button onclick="copyToClipboard(document.getElementById('input').value, this)" class="text-slate-500 hover:text-slate-300 text-[10px] uppercase font-bold">复制输入</button>
+                </div>
                 <div class="relative bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden focus-within:border-blue-500/50">
                     <textarea id="input" rows="1" oninput="autoResize(this)" 
                         class="w-full bg-transparent pt-4 pb-4 pl-6 pr-36 focus:outline-none resize-none text-sm text-slate-200" 
                         placeholder="输入剧本片段或绘图指令..."></textarea>
-                    
                     <div class="absolute right-3 bottom-3 flex gap-2">
                         <button onclick="send('chat')" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-black transition flex items-center gap-2">
                             <i data-lucide="zap" class="h-3 w-3"></i> CHAT
@@ -148,52 +167,66 @@
 
     <script>
         // --- 1. 基础变量与初始化 ---
-        lucide.createIcons();
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+            // 检查 marked 是否加载成功
+            if (typeof marked === 'undefined') {
+                console.error("Marked 库加载失败，请检查网络或路径");
+            }
+
+            marked.setOptions({
+                breaks: true,   // 关键：保留换行符
+                gfm: true,      // 开启 GitHub 风格
+                headerIds: false,
+                mangle: false
+            });
+        });
+
         let currentChatId = null;
         let chatHistory = JSON.parse(localStorage.getItem('metalhub_history') || '{}');
 
 
         // --- 5. 补充：模型列表加载函数 ---
-async function loadModelList() {
-    const select = document.getElementById('model-select');
-    const modelMetric = document.getElementById('metric-model');
-    
-    try {
-        const res = await fetch('/v1/models');
-        const data = await res.json();
-        
-        if (!data.data || data.data.length === 0) {
-            select.innerHTML = '<option value="">未找到 GGUF 模型</option>';
-            modelMetric.innerText = "None";
-            return;
+        async function loadModelList() {
+            const select = document.getElementById('model-select');
+            const modelMetric = document.getElementById('metric-model');
+            
+            try {
+                const res = await fetch('/v1/models');
+                const data = await res.json();
+                
+                if (!data.data || data.data.length === 0) {
+                    select.innerHTML = '<option value="">未找到 GGUF 模型</option>';
+                    modelMetric.innerText = "None";
+                    return;
+                }
+
+                select.innerHTML = ''; // 清空加载中提示
+                data.data.forEach((m, index) => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.innerText = m.id;
+                    // 自动选中第一个，或者根据关键词匹配
+                    if (index === 0) opt.selected = true;
+                    select.appendChild(opt);
+                });
+
+                // 初始化顶部显示的已加载模型名
+                modelMetric.innerText = select.value;
+
+            } catch (e) {
+                console.error("加载模型列表失败:", e);
+                select.innerHTML = '<option value="">加载失败</option>';
+            }
         }
 
-        select.innerHTML = ''; // 清空加载中提示
-        data.data.forEach((m, index) => {
-            const opt = document.createElement('option');
-            opt.value = m.id;
-            opt.innerText = m.id;
-            // 自动选中第一个，或者根据关键词匹配
-            if (index === 0) opt.selected = true;
-            select.appendChild(opt);
+        // 确保在页面加载和点击“新对话”时都调用它
+        window.addEventListener('DOMContentLoaded', loadModelList);
+
+        // 当用户手动切换下拉框时，同步更新顶部状态
+        document.getElementById('model-select').addEventListener('change', (e) => {
+            document.getElementById('metric-model').innerText = e.target.value;
         });
-
-        // 初始化顶部显示的已加载模型名
-        modelMetric.innerText = select.value;
-
-    } catch (e) {
-        console.error("加载模型列表失败:", e);
-        select.innerHTML = '<option value="">加载失败</option>';
-    }
-}
-
-// 确保在页面加载和点击“新对话”时都调用它
-window.addEventListener('DOMContentLoaded', loadModelList);
-
-// 当用户手动切换下拉框时，同步更新顶部状态
-document.getElementById('model-select').addEventListener('change', (e) => {
-    document.getElementById('metric-model').innerText = e.target.value;
-});
 
         // --- 2. 会话管理逻辑 ---
         function saveHistory() {
@@ -235,23 +268,47 @@ document.getElementById('model-select').addEventListener('change', (e) => {
         }
 
         function deleteChat(id, event) {
+            // 阻止事件冒泡，防止触发加载会话
             event.stopPropagation();
-            delete chatHistory[id];
-            if (currentChatId === id) createNewChat();
-            saveHistory();
+            
+            // 获取会话标题用于提示
+            const title = chatHistory[id].title || "这段对话";
+            
+            // 商业级标准：二次确认弹窗
+            if (confirm(`确定要永久删除 "${title}" 吗？此操作无法撤销。`)) {
+                // 执行删除
+                delete chatHistory[id];
+                
+                // 如果删除的是当前正在看的会话，则创建一个新会话
+                if (currentChatId === id) {
+                    createNewChat();
+                } else {
+                    // 否则只刷新列表
+                    saveHistory();
+                }
+                
+                // 可选：添加一个简单的提示（非阻塞）
+                console.log(`会话 ${id} 已删除`);
+            }
         }
 
         function loadChat(id) {
             currentChatId = id;
             const chatBox = document.getElementById('chat');
-            chatBox.innerHTML = '';
-            chatHistory[id].messages.forEach(msg => {
-                if (msg.role === 'user') renderUserBubble(msg.content);
-                else renderAIBubble(msg.content, msg.stats);
+            chatBox.innerHTML = ''; // 彻底清空，防止叠加渲染
+            
+            const messages = chatHistory[id].messages;
+            messages.forEach(msg => {
+                if (msg.role === 'user') {
+                    renderUserBubble(msg.content, false); // 传入 false 表示加载历史，不触发滚动和保存
+                } else {
+                    renderAIBubble(msg.content, msg.stats, false);
+                }
             });
-            renderHistoryList();
             chatBox.scrollTop = chatBox.scrollHeight;
+            renderHistoryList();
         }
+
 
         function toggleThought(logId) {
             const log = document.getElementById(logId);
@@ -271,6 +328,7 @@ document.getElementById('model-select').addEventListener('change', (e) => {
             textarea.style.height = (Math.min(textarea.scrollHeight, 200)) + 'px';
         }
 
+        // 统一折叠切换函数
         function toggleExpand(id) {
             const full = document.getElementById(id + '-full');
             const short = document.getElementById(id + '-short');
@@ -281,37 +339,70 @@ document.getElementById('model-select').addEventListener('change', (e) => {
             btn.innerText = isHidden ? "收缩内容" : "展开全部";
         }
 
+        // 渲染用户气泡 (恢复折叠功能 + 增加复制)
         function renderUserBubble(content) {
             const chat = document.getElementById('chat');
-            const isLong = content.length > 200;
             const msgId = 'user-' + Date.now() + Math.random().toString(36).substr(2, 5);
+            const isLong = content.length > 200;
             const display = isLong ? content.substring(0, 200) + "..." : content;
             
             let html = `
-                <div class="flex justify-end mb-6">
+                <div class="flex justify-end mb-6 group">
                     <div class="bg-blue-600/10 border border-blue-500/20 px-4 py-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm text-slate-300 shadow-lg relative">
-                        <div id="${msgId}-short">${display.replace(/\n/g, '<br>')}</div>`;
+                        <!-- 复制按钮 -->
+                        <button onclick="copyTo(\`${content.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`, this)" 
+                            class="absolute -left-10 top-0 opacity-0 group-hover:opacity-100 transition text-slate-500 hover:text-blue-400 p-2">
+                            <i data-lucide="copy" class="w-4 h-4"></i>
+                        </button>
+                        <div id="${msgId}-short" class="whitespace-pre-wrap">${display}</div>`;
+            
             if (isLong) {
                 html += `
-                        <div id="${msgId}-full" class="hidden mt-2 pt-2 border-t border-slate-700/50">${content.replace(/\n/g, '<br>')}</div>
-                        <button onclick="toggleExpand('${msgId}')" class="text-[10px] text-blue-400 mt-1 hover:text-blue-300 font-bold font-mono">[ <span id="${msgId}-btn">展开全部</span> ]</button>`;
+                        <div id="${msgId}-full" class="hidden mt-2 pt-2 border-t border-slate-700/50 whitespace-pre-wrap">${content}</div>
+                        <button onclick="toggleExpand('${msgId}')" class="text-[10px] text-blue-400 mt-1 hover:text-blue-300 font-bold font-mono uppercase">
+                            [ <span id="${msgId}-btn">展开全部</span> ]
+                        </button>`;
             }
+            
             html += `</div></div>`;
             chat.insertAdjacentHTML('beforeend', html);
+            lucide.createIcons();
         }
 
+        // 渲染 AI 气泡 (增加复制 + 申明 + 代码块优化)
         function renderAIBubble(content, stats = null) {
             const chat = document.getElementById('chat');
             const msgId = 'ai-' + Date.now();
-            let statsHtml = stats ? `<div class="mt-4 pt-2 border-t border-slate-800 text-[9px] text-slate-500 italic font-mono uppercase tracking-tighter">${stats}</div>` : '';
+            const statsHtml = stats ? `<div class="mt-4 pt-2 border-t border-slate-800 text-[9px] text-slate-500 italic font-mono uppercase tracking-tighter">>> ${stats}</div>` : '';
             
-            chat.insertAdjacentHTML('beforeend', `
-                <div class="flex justify-start mb-6">
-                    <div class="bg-slate-900 border border-slate-800 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm shadow-2xl text-slate-200 leading-relaxed">
-                        <div id="${msgId}-content">${content.replace(/\n/g, '<br>')}</div>
+            marked.setOptions({ breaks: true, gfm: true });
+
+            const html = `
+                <div class="flex justify-start mb-6 group">
+                    <div class="bg-slate-900 border border-slate-800 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm shadow-2xl text-slate-200 leading-relaxed markdown-body relative">
+                        <!-- 全文复制 -->
+                        <button onclick="copyTo(\`${content.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`, this)" 
+                            class="absolute -right-10 top-0 opacity-0 group-hover:opacity-100 transition text-slate-500 hover:text-emerald-400 p-2">
+                            <i data-lucide="copy" class="w-4 h-4"></i>
+                        </button>
+                        <div id="${msgId}-body">${marked.parse(content)}</div>
                         ${statsHtml}
                     </div>
-                </div>`);
+                </div>`;
+            chat.insertAdjacentHTML('beforeend', html);
+            
+            // 专门为代码块加复制和警告
+            const body = document.getElementById(`${msgId}-body`);
+            body.querySelectorAll('pre').forEach(pre => {
+                const code = pre.innerText;
+                pre.style.position = 'relative';
+                pre.insertAdjacentHTML('beforeend', `<button onclick="copyTo(\`${code.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`, this)" class="copy-btn">复制代码</button>`);
+                const warn = document.createElement('div');
+                warn.className = 'code-warning';
+                warn.innerText = '注意：请谨慎使用以上代码。';
+                pre.after(warn);
+            });
+            lucide.createIcons();
         }
 
 
@@ -398,54 +489,81 @@ document.getElementById('model-select').addEventListener('change', (e) => {
                             try {
                                 const data = JSON.parse(line.replace('data: ', ''));
                                 
-                            // 1. 处理后端发送的控制/指标包
-                            if (data.extra) {
-                                const ex = data.extra;
-                                // 将状态更新写入思考日志
-                                if (ex.status === 'LOADING_MODEL') {
-                                    logDiv.innerHTML += `> 加载模型: ${ex.active_model || 'GGUF'}<br>`;
+                                // 1. 处理后端发送的控制/指标包
+                                if (data.extra) {
+                                    const ex = data.extra;
+                                    // 将状态更新写入思考日志
+                                    if (ex.status === 'LOADING_MODEL') {
+                                        logDiv.innerHTML += `> 加载模型: ${ex.active_model || 'GGUF'}<br>`;
+                                    }
+                                    if (ex.status === 'PROCESSING_PROMPT') {
+                                        statusSpan.innerText = "正在加速预处理...";
+                                        logDiv.innerHTML += `> 预处理 Context: ${ex.n_ctx} tokens...<br>`;
+                                        logDiv.innerHTML += `> 耗时: ${ex.processing_ms}ms<br>`;
+                                    }
+                                    
+                                    // 指标实时同步到 Header
+                                    if (ex.tps) document.getElementById('metric-tps').innerText = ex.tps + ' t/s';
+                                    if (ex.processing_ms) document.getElementById('metric-pp').innerText = ex.processing_ms + ' ms';
+                                    
+                                    // 收到结束包，打印统计
+                                    if (ex.status === 'DONE') {
+                                        contentDiv.insertAdjacentHTML('beforeend', `
+                                            <div class="mt-4 pt-2 border-t border-slate-800 text-[9px] text-slate-500 italic font-mono uppercase tracking-tighter">
+                                                >> STATS: ${ex.total_tokens} tokens | ${ex.gen_time}s | ${ex.tps} t/s
+                                            </div>`);
+                                    }
                                 }
-                                if (ex.status === 'PROCESSING_PROMPT') {
-                                    statusSpan.innerText = "正在加速预处理...";
-                                    logDiv.innerHTML += `> 预处理 Context: ${ex.n_ctx} tokens...<br>`;
-                                    logDiv.innerHTML += `> 耗时: ${ex.processing_ms}ms<br>`;
-                                }
-                                
-                                // 指标实时同步到 Header
-                                if (ex.tps) document.getElementById('metric-tps').innerText = ex.tps + ' t/s';
-                                if (ex.processing_ms) document.getElementById('metric-pp').innerText = ex.processing_ms + ' ms';
-                                
-                                // 收到结束包，打印统计
-                                if (ex.status === 'DONE') {
-                                    contentDiv.insertAdjacentHTML('beforeend', `
-                                        <div class="mt-4 pt-2 border-t border-slate-800 text-[9px] text-slate-500 italic font-mono uppercase tracking-tighter">
-                                            >> STATS: ${ex.total_tokens} tokens | ${ex.gen_time}s | ${ex.tps} t/s
-                                        </div>`);
-                                }
-                            }
 
-                            // 2. 处理内容包
-                            if (data.choices && data.choices[0].delta.content) {
-                                // --- 关键点：首次收到内容，清除思考框 ---
-                                if (isThinking) {
-                                    thoughtContainer.remove(); // 彻底移除思考气泡
-                                    isThinking = false;
+                                // 2. 处理内容包
+                                if (data.choices && data.choices[0].delta.content) {
+                                    // --- 关键点：首次收到内容，清除思考框 ---
+                                    if (isThinking) {
+                                        thoughtContainer.remove(); // 彻底移除思考气泡
+                                        isThinking = false;
+                                    }
+                                    
+                                    const chunk = data.choices[0].delta.content;
+                                    fullContent += chunk;
+                                    
+                                    // 流式期间：显示文本内容（换行处理）
+                                    contentDiv.innerHTML = fullContent.replace(/\n/g, '<br>');
+                                    chat.scrollTop = chat.scrollHeight;
                                 }
-                                
-                                const chunk = data.choices[0].delta.content;
-                                fullContent += chunk;
-                                // 平滑显示逻辑
-                                const span = document.createElement('span');
-                                span.innerHTML = chunk.replace(/\n/g, '<br>');
-                                contentDiv.appendChild(span);
-                                
-                                document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
-                            }
-                        } catch (e) { console.error("解析错误:", e); }
+
+                                // 收到 DONE 信号时，进行全量 Markdown 渲染
+                                if (data.extra && data.extra.status === 'DONE') {
+                                    // 使用 marked 渲染最终结果
+                                    contentDiv.innerHTML = marked.parse(fullContent);
+                                    contentDiv.classList.add('markdown-body');
+                                    
+                                    // 存入历史
+                                    chatHistory[currentChatId].messages.push({
+                                        role: 'assistant', 
+                                        content: fullContent, 
+                                        stats: `STATS: ${data.extra.total_tokens} tokens | ${data.extra.gen_time}s`
+                                    });
+                                    saveHistory();
+                                }
+
+                            } catch (e) { console.error("解析错误:", e); }
                         }
+                        
                     }
-                    chatHistory[currentChatId].messages.push({role: 'assistant', content: fullContent, stats: finalStats});
-                    saveHistory();
+                    // 循环结束后执行：
+                    if (type === 'chat') {
+                        // 检查最后一条消息是否已经是 AI，防止重复添加
+                        const lastMsg = chatHistory[currentChatId].messages.slice(-1)[0];
+                        if (lastMsg && lastMsg.role !== 'assistant') {
+                            chatHistory[currentChatId].messages.push({
+                                role: 'assistant', 
+                                content: fullContent, 
+                                stats: finalStats 
+                            });
+                        }
+                        saveHistory();
+                    }
+
 
                 } else {
                     // 生图逻辑
