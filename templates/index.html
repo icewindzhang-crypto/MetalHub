@@ -4,7 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MetalHub Cluster Console</title>
-    <!-- 使用本地化资源 -->
     <script src="/static/tailwind.js"></script>
     <script src="/static/lucide.js"></script>
     <style>
@@ -22,12 +21,11 @@
     <aside class="w-80 bg-slate-900 border-r border-slate-800 flex flex-col hidden lg:flex">
         <div class="p-6 border-b border-slate-800">
             <h1 class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400 tracking-tighter">
-                METALHUB <span class="text-xs italic font-light text-slate-500">v0.2.0</span>
+                METALHUB <span class="text-xs italic font-light text-slate-500">v0.3.0</span>
             </h1>
         </div>
         
         <div class="p-6 flex-1 space-y-6 overflow-y-auto">
-            <!-- 状态 -->
             <div>
                 <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Engine Status</label>
                 <div id="status-badge" class="mt-2 flex items-center gap-2 text-emerald-400 bg-emerald-400/5 px-3 py-2 rounded-lg border border-emerald-500/20">
@@ -36,55 +34,26 @@
                 </div>
             </div>
 
-            <!-- 动态 Profile 变量 -->
             <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-700/50">
                 <label class="text-[10px] text-slate-500 uppercase">Active Profile</label>
                 <div class="text-sm font-bold mt-1 text-blue-400 flex items-center gap-2">
                     <i data-lucide="layers" class="h-4 w-4"></i> 
-                    <!-- Jinja2 变量渲染 -->
                     <span id="active-profile-name">{{ profile }}</span>
                 </div>
             </div>
 
-            <!-- 在左侧边栏“Active Profile”下方增加 -->
             <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-700/50">
                 <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Model Selector</label>
                 <select id="model-select" class="w-full mt-2 bg-slate-900 text-xs border border-slate-700 rounded p-2 text-blue-300 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all">
-                    <option value="">正在扫描 models/ 目录...</option>
+                    <option value="">正在加载模型列表...</option>
                 </select>
-                <p class="text-[9px] text-slate-600 mt-2 italic"><i data-lucide="info" class="inline h-2 w-2"></i> 切换将触发显存重新分配</p>
+                <p class="text-[9px] text-slate-600 mt-2 italic"><i data-lucide="info" class="inline h-2 w-2"></i> 切换将触发模型接力</p>
             </div>
 
-            <script>
-                // 页面加载时自动获取模型列表
-                async function loadModelList() {
-                    const res = await fetch('/v1/models');
-                    const data = await res.json();
-                    const select = document.getElementById('model-select');
-                    select.innerHTML = '';
-                    data.data.forEach(m => {
-                        const opt = document.createElement('option');
-                        opt.value = m.id;
-                        opt.innerText = m.id;
-                        // 默认选中当前 Profile 里的模型
-                        if (m.id.includes("27B")) opt.selected = true; 
-                        select.appendChild(opt);
-                    });
-                }
-                loadModelList();
-
-                // 在 send 函数中获取当前选择的模型
-                async function send(type) {
-                    const selectedModel = document.getElementById('model-select').value;
-                    // ... 在 fetch 的 body 中加入 model: selectedModel
-                }
-            </script>
-
-            <!-- 集群节点实时监控 (核心修正点) -->
             <div>
                 <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Cluster Distribution</label>
                 <div id="nodes-container" class="mt-2 space-y-3">
-                    <p class="text-[10px] text-slate-600 italic">等待推理任务以分配负载...</p>
+                    <p class="text-[10px] text-slate-600 italic">等待任务分配负载...</p>
                 </div>
             </div>
         </div>
@@ -97,9 +66,9 @@
     <!-- 右侧主界面 -->
     <main class="flex-1 flex flex-col relative bg-slate-950">
         <header class="h-16 border-b border-slate-800/50 flex items-center justify-between px-8 bg-slate-900/30 backdrop-blur-xl z-10">
-            <div class="flex gap-8 items-center">
+            <div class="flex gap-6 items-center">
                 <div class="flex flex-col">
-                    <span class="text-[10px] text-slate-500 uppercase">Throughput</span>
+                    <span class="text-[10px] text-slate-500 uppercase">TPS</span>
                     <span id="metric-tps" class="text-sm font-mono text-blue-400 font-black">-- t/s</span>
                 </div>
                 <div class="flex flex-col">
@@ -107,24 +76,17 @@
                     <span id="metric-pp" class="text-sm font-mono text-emerald-400 font-black">-- ms</span>
                 </div>
                 <div class="flex flex-col">
-                    <span class="text-[10px] text-slate-500 uppercase">Current Ctx</span>
-                    <span id="metric-ctx" class="text-sm font-mono text-amber-400 font-black">--</span>
+                    <span class="text-[10px] text-slate-500 uppercase">Loaded Model</span>
+                    <span id="metric-model" class="text-[10px] font-mono text-slate-400 font-bold truncate max-w-[150px]">None</span>
                 </div>
             </div>
-            <!-- 在 metric-pp 后面增加 -->
-            <div class="h-8 w-px bg-slate-800"></div>
-            <div class="flex flex-col">
-                <span class="text-[10px] text-slate-500 uppercase">Loaded Model</span>
-                <span id="metric-model" class="text-xs font-mono text-slate-400 font-bold truncate max-w-[120px]">None</span>
-            </div>
-
             <button onclick="location.reload()" class="text-slate-500 hover:text-red-400 transition-colors"><i data-lucide="rotate-ccw" class="h-4 w-4"></i></button>
         </header>
 
         <div id="chat" class="chat-container p-8 space-y-8">
             <div class="text-center mt-20 opacity-20">
                 <i data-lucide="bot" class="h-16 w-16 mx-auto mb-4"></i>
-                <p class="text-xl font-black italic">METALHUB ENGINE</p>
+                <p class="text-xl font-black italic text-blue-400">METALHUB ENGINE</p>
                 <p class="text-sm">M1 Max 64GB Unified Memory Relay</p>
             </div>
         </div>
@@ -134,11 +96,11 @@
                 <div class="relative bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden focus-within:border-blue-500/50">
                     <textarea id="input" rows="1" oninput="autoResize(this)" 
                         class="w-full bg-transparent pt-4 pb-4 pl-6 pr-36 focus:outline-none resize-none text-sm text-slate-200" 
-                        placeholder="输入内容进行推理或绘图..."></textarea>
+                        placeholder="输入剧本片段或绘图指令..."></textarea>
                     
                     <div class="absolute right-3 bottom-3 flex gap-2">
                         <button onclick="send('chat')" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-black transition flex items-center gap-2">
-                            <i data-lucide="message-square" class="h-3 w-3"></i> CHAT
+                            <i data-lucide="zap" class="h-3 w-3"></i> CHAT
                         </button>
                         <button onclick="send('image')" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-xs font-black transition flex items-center gap-2">
                             <i data-lucide="image" class="h-3 w-3"></i> DRAW
@@ -150,42 +112,10 @@
     </main>
 
     <script>
-        // 初始化 Lucide 图标
         lucide.createIcons();
 
-        function autoResize(textarea) {
-            textarea.style.height = 'auto';
-            textarea.style.height = (Math.min(textarea.scrollHeight, 200)) + 'px';
-        }
-
-        // 动态更新集群节点 UI
-        function updateClusterNodes(nodeInfo) {
-            const container = document.getElementById('nodes-container');
-            if (!nodeInfo || nodeInfo.length === 0) return;
-            
-            container.innerHTML = ''; // 清除占位符
-            nodeInfo.forEach(node => {
-                const pct = (node.ratio * 100).toFixed(1);
-                const statusColor = node.active ? 'text-blue-400' : 'text-slate-600';
-                const barColor = node.active ? 'bg-blue-500' : 'bg-slate-700';
-                
-                const nodeHtml = `
-                    <div class="bg-slate-800/60 border border-slate-700 p-3 rounded-xl transition-all">
-                        <div class="flex justify-between items-center mb-2">
-                            <span class="text-[10px] font-mono ${statusColor}">${node.host}</span>
-                            <span class="text-[10px] font-bold text-slate-400">${pct}%</span>
-                        </div>
-                        <div class="w-full bg-slate-900 h-1 rounded-full overflow-hidden">
-                            <div class="h-full ${barColor} transition-all duration-1000" style="width: ${pct}%"></div>
-                        </div>
-                    </div>
-                `;
-                container.insertAdjacentHTML('beforeend', nodeHtml);
-            });
-        }
-
-        // 1. 页面加载时请求模型列表
-        async function loadModels() {
+        // 获取模型列表
+        async function loadModelList() {
             try {
                 const res = await fetch('/v1/models');
                 const data = await res.json();
@@ -193,23 +123,60 @@
                 select.innerHTML = '';
                 data.data.forEach(m => {
                     const opt = document.createElement('option');
-                    opt.value = m.id;
-                    opt.innerText = m.id;
-                    // 自动选中你之前在 config 里定义的那个文件名（如果匹配）
-                    if(m.id.toLowerCase().includes('27b')) opt.selected = true;
+                    opt.value = m.id; opt.innerText = m.id;
+                    if (m.id.toLowerCase().includes("27b")) opt.selected = true; 
                     select.appendChild(opt);
                 });
-            } catch (e) { console.error("无法获取模型列表"); }
+            } catch (e) { console.error("Load models failed"); }
         }
-        loadModels();
+        loadModelList();
 
-        // 2. 在 send 函数中提取选中的模型并发送
+        function autoResize(textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = (Math.min(textarea.scrollHeight, 200)) + 'px';
+        }
+
+        function toggleExpand(id) {
+            const full = document.getElementById(id + '-full');
+            const short = document.getElementById(id + '-short');
+            const btn = document.getElementById(id + '-btn');
+            
+            if (full.classList.contains('hidden')) {
+                full.classList.remove('hidden');
+                short.classList.add('hidden');
+                btn.innerText = "收缩内容";
+            } else {
+                full.classList.add('hidden');
+                short.classList.remove('hidden');
+                btn.innerText = "展开全部";
+            }
+        }
+
+        function updateClusterNodes(nodeInfo) {
+            const container = document.getElementById('nodes-container');
+            if (!nodeInfo) return;
+            container.innerHTML = '';
+            nodeInfo.forEach(node => {
+                const pct = (node.ratio * 100).toFixed(1);
+                container.insertAdjacentHTML('beforeend', `
+                    <div class="bg-slate-800/60 border border-slate-700 p-2 rounded-lg">
+                        <div class="flex justify-between text-[9px] mb-1">
+                            <span class="${node.active ? 'text-blue-400' : 'text-slate-500'}">${node.host}</span>
+                            <span class="text-slate-400">${pct}%</span>
+                        </div>
+                        <div class="w-full bg-slate-950 h-1 rounded-full overflow-hidden">
+                            <div class="h-full bg-blue-500 transition-all duration-700" style="width: ${pct}%"></div>
+                        </div>
+                    </div>`);
+            });
+        }
+
         async function send(type) {
-            const modelSelect = document.getElementById('model-select');
-            const selectedModel = modelSelect.value;
 
             const input = document.getElementById('input');
             const chat = document.getElementById('chat');
+            const statusText = document.getElementById('status-text');
+            const selectedModel = document.getElementById('model-select').value;
             const val = input.value.trim();
             if (!val) return;
 
@@ -219,102 +186,95 @@
             autoResize(input);
             chat.scrollTop = chat.scrollHeight;
 
-            // 更新状态灯
-            const badge = document.getElementById('status-badge');
-            badge.className = "mt-2 flex items-center gap-2 text-amber-400 bg-amber-400/5 px-3 py-2 rounded-lg border border-amber-500/20";
-            document.getElementById('status-text').innerText = type === 'chat' ? "INFERENCING" : "GENERATING";
-
+            statusText.innerText = type === 'chat' ? "INFERENCING" : "GENERATING";
+            
             try {
                 if (type === 'chat') {
                     const res = await fetch('/v1/chat/completions', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ messages: [{role: "user", content: val}], stream: true,
-                            model: selectedModel // 将选中的模型名发给后端
-                         })
+                        body: JSON.stringify({ messages: [{role: "user", content: val}], stream: true, model: selectedModel })
                     });
-
+                    
                     const reader = res.body.getReader();
                     const decoder = new TextDecoder();
-                    
                     let aiMsgId = 'ai-' + Date.now();
-                    // 初始气泡，带有一个“思考中”的样式
+                    
+                    // 创建带“思考中”状态的气泡
                     chat.innerHTML += `
                         <div class="flex justify-start">
                             <div id="${aiMsgId}" class="bg-slate-900 border border-slate-800 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm shadow-2xl">
-                                <div id="${aiMsgId}-thought" class="text-xs text-blue-400 italic mb-2 animate-pulse">
-                                    <i data-lucide="loader" class="h-3 w-3 inline mr-1"></i> 准备中...
+                                <div id="${aiMsgId}-thought" class="text-[10px] text-blue-400 italic mb-2 animate-pulse flex items-center gap-1">
+                                    <i data-lucide="loader" class="h-3 w-3 animate-spin"></i> <span id="${aiMsgId}-status">正在初始化...</span>
                                 </div>
                                 <div id="${aiMsgId}-content" class="text-slate-200"></div>
                             </div>
                         </div>`;
-                    lucide.createIcons(); // 刷新图标
-
+                    lucide.createIcons();
+                    
                     const contentDiv = document.getElementById(aiMsgId + "-content");
                     const thoughtDiv = document.getElementById(aiMsgId + "-thought");
-                    
-                    const reader = res.body.getReader();
-                    const decoder = new TextDecoder();
-                    let aiMsgId = 'ai-' + Date.now();
-                    chat.innerHTML += `<div class="flex justify-start"><div id="${aiMsgId}" class="bg-slate-900 border border-slate-800 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm leading-relaxed shadow-2xl text-slate-200"></div></div>`;
-                    const container = document.getElementById(aiMsgId);
+                    const statusSpan = document.getElementById(aiMsgId + "-status");
+
+                    // --- 在 send 函数中找到渲染用户气泡的部分 ---
+                    const val = input.value.trim();
+                    if (!val) return;
+
+                    if(chat.innerText.includes("ENGINE")) chat.innerHTML = "";
+
+                    // --- 核心修改：长文本折叠逻辑 ---
+                    const isLongText = val.length > 200;
+                    const displayContent = isLongText ? val.substring(0, 200) + "..." : val;
+                    const msgId = 'user-msg-' + Date.now();
+
+                    let userBubbleHtml = `
+                        <div class="flex justify-end mb-6">
+                            <div class="bg-blue-600/10 border border-blue-500/20 px-4 py-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm text-slate-300 shadow-lg relative">
+                                <div id="${msgId}-short">${displayContent.replace(/\n/g, '<br>')}</div>
+                    `;
+
+                    if (isLongText) {
+                        userBubbleHtml += `
+                                <div id="${msgId}-full" class="hidden mt-2 pt-2 border-t border-slate-700/50">${val.replace(/\n/g, '<br>')}</div>
+                                <button onclick="toggleExpand('${msgId}')" class="text-[10px] text-blue-400 mt-1 hover:text-blue-300 font-bold uppercase tracking-tighter">
+                                    [ <span id="${msgId}-btn">展开全部</span> ]
+                                </button>
+                        `;
+                    }
+
+                    userBubbleHtml += `</div></div>`;
+                    chat.innerHTML += userBubbleHtml;
+
+                    input.value = "";
+                    autoResize(input);
+                    chat.scrollTop = chat.scrollHeight;
 
                     while (true) {
                         const {done, value} = await reader.read();
                         if (done) break;
-                        const chunk = decoder.decode(value);
-                        const lines = chunk.split('\n');
+                        const lines = decoder.decode(value).split('\n');
                         
                         for (const line of lines) {
                             if (!line.trim() || line === 'data: [DONE]') continue;
-
-                               try {
-                                    const jsonStr = line.replace('data: ', '');
-                                    const data = JSON.parse(jsonStr);
-                                    
-                                    // 1. 安全处理指标包 (第一包或最后一包)
-                                    if (data.extra) {
-                                        if (data.extra.tps) document.getElementById('metric-tps').innerText = data.extra.tps + ' t/s';
-                                        if (data.extra.processing_ms) document.getElementById('metric-pp').innerText = data.extra.processing_ms + ' ms';
-                                        if (data.extra.n_ctx) document.getElementById('metric-ctx').innerText = data.extra.n_ctx;
-                                        if (data.extra.active_model) document.getElementById('metric-model').innerText = data.extra.active_model;
-                                        if (data.extra.node_info) updateClusterNodes(data.extra.node_info);
-
-                                        const ex = data.extra;
-                                        // 更新进度条和状态文字
-                                        if (ex.status === 'PROCESSING_PROMPT') {
-                                            thoughtDiv.innerHTML = `<i data-lucide="cpu" class="h-3 w-3 inline mr-1"></i> ${ex.msg} (耗时: ${ex.processing_ms}ms)`;
-                                            lucide.createIcons();
-                                        }
-                                        if (ex.status === 'GENERATING') {
-                                            // 关键：开始生成结果，移除思考层
-                                            thoughtDiv.remove(); 
-                                        }
-                                        // 更新顶部指标
-                                        if (ex.tps) document.getElementById('metric-tps').innerText = ex.tps + ' t/s';
-                                        if (ex.total_tokens) {
-                                            contentDiv.innerHTML += `<div class="mt-4 pt-2 border-t border-slate-800 text-[10px] text-slate-500 italic">
-                                                统计: 生成 ${ex.total_tokens} tokens | 用时 ${ex.gen_time}s
-                                            </div>`;
-                                        }
-                                    }
-
-                                    // 关键：处理后端传来的动态指标和节点信息
-                                    if (data.extra && data.extra.active_model) {
-                                        document.getElementById('metric-model').innerText = data.extra.active_model;
-                                    }
-
-                                    
-                                    // 2. 安全处理内容包 (中间的推理包)
-                                    // 增加数据结构存在性检查
-                                    if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
-                                        container.innerHTML += data.choices[0].delta.content.replace(/\n/g, '<br>');
-                                        chat.scrollTop = chat.scrollHeight;
-                                    }
-                                } catch (e) { 
-                                    console.warn("跳过非JSON行或解析错误:", line); 
-                                }
+                            const data = JSON.parse(line.replace('data: ', ''));
                             
+                            if (data.extra) {
+                                const ex = data.extra;
+                                if (ex.status === 'PROCESSING_PROMPT') statusSpan.innerText = `正在处理长文本 (${ex.processing_ms}ms)`;
+                                if (ex.status === 'GENERATING') if(thoughtDiv) thoughtDiv.remove();
+                                if (ex.tps) document.getElementById('metric-tps').innerText = ex.tps + ' t/s';
+                                if (ex.active_model) document.getElementById('metric-model').innerText = ex.active_model;
+                                if (ex.node_info) updateClusterNodes(ex.node_info);
+                                if (ex.total_tokens) {
+                                    contentDiv.innerHTML += `<div class="mt-4 pt-2 border-t border-slate-800 text-[9px] text-slate-500 italic">
+                                        Stats: ${ex.total_tokens} tokens | ${ex.gen_time}s | ${ex.tps} t/s</div>`;
+                                }
+                            }
+                            
+                            if (data.choices && data.choices[0].delta.content) {
+                                contentDiv.innerHTML += data.choices[0].delta.content.replace(/\n/g, '<br>');
+                                chat.scrollTop = chat.scrollHeight;
+                            }
                         }
                     }
                 } else {
@@ -324,13 +284,12 @@
                         body: JSON.stringify({ prompt: val })
                     });
                     const data = await res.json();
-                    chat.innerHTML += `<div class="flex justify-start"><div class="bg-slate-900 border border-slate-800 p-2 rounded-2xl shadow-2xl"><img src="${data.data.url}" class="rounded-xl max-w-full md:max-w-md"></div></div>`;
+                    chat.innerHTML += `<div class="flex justify-start"><div class="bg-slate-900 border border-slate-800 p-2 rounded-2xl shadow-2xl"><img src="${data.data.url}" class="rounded-xl max-w-md"></div></div>`;
                 }
             } catch (err) {
-                chat.innerHTML += `<div class="text-red-500 text-xs italic p-4">Error: ${err.message}</div>`;
+                chat.innerHTML += `<div class="text-red-500 text-xs p-4">Error: ${err.message}</div>`;
             } finally {
-                badge.className = "mt-2 flex items-center gap-2 text-emerald-400 bg-emerald-400/5 px-3 py-2 rounded-lg border border-emerald-500/20";
-                document.getElementById('status-text').innerText = "READY";
+                statusText.innerText = "Ready";
                 chat.scrollTop = chat.scrollHeight;
             }
         }
