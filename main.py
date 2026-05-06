@@ -15,6 +15,18 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+import signal
+
+def graceful_exit(sig, frame):
+    print("\n正在关闭 MetalHub，清理显存...")
+    # 这里可以尝试强制释放一些全局资源
+    gc.collect()
+    torch.mps.empty_cache()
+    exit(0)
+
+# 在 main 块中注册信号
+signal.signal(signal.SIGINT, graceful_exit) # 捕捉 Ctrl+C
+
 # ================= 1. 硬件探测与配置加载 
 # 1. 先定义探测函数
 def detect_hardware():
@@ -80,49 +92,48 @@ profile = config['profiles'][active_name]
 
 
 # 修改 main.py 中的 chat_endpoint 生成器部分
-async def generate():
+# 修改 main.py 中的 stream_generator
+async def stream_generator(n_ctx, n_batch, model_path):
     async with lock:
         start_time = time.time()
-        # 1. 模拟处理进度：发送正在加载信号
-        yield f"data: {json.dumps({'extra': {'status': 'LOADING_MODEL', 'msg': '正在初始化架构...'}})}\n\n"
+        # 1. 发送：正在加载模型
+        yield f"data: {json.dumps({'extra': {'status': 'LOADING_MODEL', 'active_model': os.path.basename(model_path)}})}\n\n"
         
-        llm = Llama(
-            model_path=model_path,
-            n_gpu_layers=-1, rpc=rpc_param, tensor_split=tensor_split,
-            n_ctx=n_ctx, n_batch=n_batch, flash_attn=True, verbose=False
-        )
+        llm = Llama(model_path=model_path, n_gpu_layers=-1, n_ctx=n_ctx, n_batch=n_batch, flash_attn=True, verbose=False)
         load_done = time.time()
-        
-        # 2. 模拟 PP (Prompt Processing) 进度包
-        # 提示：对于长文本，此阶段最耗时。我们发送一个预估包。
+        load_ms = round((load_done - start_time) * 1000, 2)
+
+        # 2. 发送：正在处理 Prompt (包含预估，因为 llama-cpp-python 阻塞执行，我们发一个起始包)
+        # 这里的 n_ctx 对应处理的规模
         yield f"data: {json.dumps({'extra': {
-            'status': 'PROCESSING_PROMPT',
-            'msg': f'正在处理长文本 (CTX: {n_ctx})...',
-            'processing_ms': round((load_done - start_time) * 1000, 2)
+            'status': 'PROCESSING_PROMPT', 
+            'processing_ms': load_ms, 
+            'n_ctx': n_ctx,
+            'msg': f'正在加速预处理 {n_ctx} tokens...'
         }})}\n\n"
 
         token_count = 0
         start_gen = time.time()
         
-        # 开始推理
         for chunk in llm.create_chat_completion(messages=messages, stream=True):
             if token_count == 0:
-                # 收到第一个 token 时，告诉前端清理“思考/处理”文字
+                # 3. 发送：生成开始（此包将触发前端清除“思考”文字）
                 yield f"data: {json.dumps({'extra': {'status': 'GENERATING'}})}\n\n"
             
             token_count += 1
             yield f"data: {json.dumps(chunk)}\n\n"
         
-        # 3. 最终统计包
-        duration = time.time() - start_gen
-        tps = round(token_count / duration, 2) if duration > 0 else 0
+        # 4. 发送：最终统计
+        end_time = time.time()
+        gen_duration = end_time - start_gen
+        tps = round(token_count / gen_duration, 2) if gen_duration > 0 else 0
         yield f"data: {json.dumps({'extra': {
             'status': 'DONE',
             'tps': tps, 
             'total_tokens': token_count,
-            'gen_time': round(duration, 2)
+            'gen_time': round(gen_duration, 2)
         }})}\n\n"
-        yield "data: [DONE]\n\n"
+
         
         del llm
         gc.collect()
@@ -156,47 +167,94 @@ async def chat_endpoint(request: Request):
     else:
         model_path = os.path.abspath(profile['llm']['path'])
 
-    # 动态参数计算
+    # --- 1. 动态参数计算 (补全 n_batch) ---
     full_text = "".join([m.get("content", "") for m in messages])
-    n_ctx = int(min(max(len(full_text)//1.2 + 1024, 4096), profile['llm']['n_ctx_limit']))
+    estimated_tokens = len(full_text) // 1.2
+    
+    # 动态上下文 n_ctx
+    n_ctx = int(min(max(estimated_tokens + 1024, 4096), profile['llm']['n_ctx_limit']))
+    
+    # 动态批处理 n_batch (这是修复关键)
+    # 逻辑：短文本用 512 减少内存压力，长文本(>16K)用 4096 开启极限预处理加速
+    if n_ctx > 16384:
+        n_batch = 4096
+    else:
+        n_batch = profile['llm'].get('n_batch', 512)
+
+    # --- 2. 获取模型路径 ---
+    selected_model = body.get("model")
+    if selected_model and selected_model.endswith(".gguf"):
+        model_path = os.path.join(BASE_DIR, "models", selected_model)
+    else:
+        model_path = os.path.abspath(profile['llm']['path'])
     
     # 分布式探测
     rpc_nodes_cfg = config['server'].get('rpc_nodes', [])
     rpc_param, tensor_split = get_balanced_rpc_config(rpc_nodes_cfg)
 
-    async def generate():
+    # --- 3. 定义流式生成器 (确保捕获外部变量) ---
+    async def generate(n_ctx, n_batch, model_path): # 通过参数显式传递最稳
         async with lock:
-            start_load = time.time()
+            start_time = time.time()
+            
+            # --- 步骤 1: 立即发送加载信号（此时 Llama 还没开始初始化） ---
+            yield f"data: {json.dumps({'extra': {'status': 'LOADING_MODEL', 'active_model': os.path.basename(model_path)}})}\n\n"
+            # 给网络一个小缓冲，确保前端渲染出 thoughtDiv
+            await asyncio.sleep(0.1) 
+
+            # --- 步骤 2: 加载模型 (耗时操作) ---
             llm = Llama(
-                model_path=model_path, # 使用选中的模型
+                model_path=model_path,
                 n_gpu_layers=-1,
                 rpc=rpc_param,
                 tensor_split=tensor_split,
                 n_ctx=n_ctx,
-                n_batch=profile['llm']['n_batch'],
+                n_batch=n_batch,
                 flash_attn=True,
                 verbose=False
             )
-            load_ms = round((time.time() - start_load) * 1000, 2)
-            
-            # 向前端传回当前正在运行的模型文件名
-            yield f"data: {json.dumps({'extra': {'active_model': os.path.basename(model_path), 'processing_ms': load_ms, 'n_ctx': n_ctx}})}\n\n"
+
+            load_done = time.time()
+            load_ms = round((load_done - start_time) * 1000, 2)
+
+            # --- 步骤 3: 立即发送预处理信号 ---
+            yield f"data: {json.dumps({'extra': {
+                'status': 'PROCESSING_PROMPT', 
+                'processing_ms': load_ms, 
+                'n_ctx': n_ctx
+            }})}\n\n"
 
             token_count = 0
             start_gen = time.time()
+            
+            # --- 步骤 4: 推理循环 ---
             for chunk in llm.create_chat_completion(messages=messages, stream=True):
+                if token_count == 0:
+                    # 收到第一个 token，清理思考文字
+                    yield f"data: {json.dumps({'extra': {'status': 'GENERATING'}})}\n\n"
+                
                 token_count += 1
                 yield f"data: {json.dumps(chunk)}\n\n"
             
-            tps = round(token_count / (time.time() - start_gen), 2)
-            yield f"data: {json.dumps({'extra': {'tps': tps}})}\n\n"
+            # --- 步骤 5: 发送最终统计 ---
+            gen_duration = time.time() - start_gen
+            tps = round(token_count / gen_duration, 2) if gen_duration > 0 else 0
+            yield f"data: {json.dumps({'extra': {
+                'status': 'DONE',
+                'tps': tps, 
+                'total_tokens': token_count,
+                'gen_time': round(gen_duration, 2)
+            }})}\n\n"
             yield "data: [DONE]\n\n"
+
             
             del llm
             gc.collect()
             torch.mps.empty_cache()
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+
+    # 启动时传入计算好的参数
+    return StreamingResponse(generate(n_ctx, n_batch, model_path), media_type="text/event-stream")
 
 # ================= 3. 生图接口 (保持原有逻辑) =================
 @app.post("/v1/images/generations")

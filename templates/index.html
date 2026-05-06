@@ -6,6 +6,16 @@
     <title>MetalHub Cluster Console</title>
     <script src="/static/tailwind.js"></script>
     <script src="/static/lucide.js"></script>
+    <script src="https://jsdelivr.net"></script>
+    <style>
+        /* Markdown 样式微调 */
+        .markdown-body pre { background: #0f172a; padding: 1rem; border-radius: 0.75rem; overflow-x: auto; border: 1px solid #1e293b; margin: 0.5rem 0; }
+        .markdown-body code { font-family: 'JetBrains Mono', monospace; color: #93c5fd; font-size: 0.85rem; }
+        .markdown-body p { margin-bottom: 0.75rem; }
+        .markdown-body ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        .markdown-body ol { list-style-type: decimal; padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        .markdown-body h1, .markdown-body h2 { color: #60a5fa; font-weight: bold; margin-top: 1rem; }
+    </style>
     <style>
         body { background-color: #0f172a; color: #f1f5f9; font-family: 'Inter', sans-serif; }
         .chat-container { height: calc(100vh - 200px); overflow-y: auto; scroll-behavior: smooth; }
@@ -49,6 +59,31 @@
                 </select>
                 <p class="text-[9px] text-slate-600 mt-2 italic"><i data-lucide="info" class="inline h-2 w-2"></i> 切换将触发模型接力</p>
             </div>
+
+            <!-- 在左侧边栏 Model Selector 下方增加会话列表区域 -->
+            <div class="flex-1 flex flex-col min-h-0">
+                <div class="px-6 py-4 flex justify-between items-center border-t border-slate-800">
+                    <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">History</label>
+                    <button onclick="createNewChat()" class="text-blue-400 hover:text-blue-300 transition">
+                        <i data-lucide="plus-circle" class="h-4 w-4"></i>
+                    </button>
+                </div>
+                <div id="history-list" class="flex-1 overflow-y-auto px-4 space-y-1 pb-4">
+                    <!-- 历史会话项将动态加载到这里 -->
+                </div>
+            </div>
+
+            <style>
+                /* 文字平滑淡入动画 */
+                .token-fade { animation: fadeIn 0.2s ease-out forwards; }
+                @keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+                
+                /* 会话项激活样式 */
+                .history-item.active { background-color: #1e293b; border-color: #3b82f6; color: #60a5fa; }
+                .history-item { cursor: pointer; transition: all 0.2s; border: 1px solid transparent; }
+                .history-item:hover { background-color: #1e293b; }
+            </style>
+
 
             <div>
                 <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Cluster Distribution</label>
@@ -112,25 +147,125 @@
     </main>
 
     <script>
+        // --- 1. 基础变量与初始化 ---
         lucide.createIcons();
+        let currentChatId = null;
+        let chatHistory = JSON.parse(localStorage.getItem('metalhub_history') || '{}');
 
-        // 获取模型列表
-        async function loadModelList() {
-            try {
-                const res = await fetch('/v1/models');
-                const data = await res.json();
-                const select = document.getElementById('model-select');
-                select.innerHTML = '';
-                data.data.forEach(m => {
-                    const opt = document.createElement('option');
-                    opt.value = m.id; opt.innerText = m.id;
-                    if (m.id.toLowerCase().includes("27b")) opt.selected = true; 
-                    select.appendChild(opt);
-                });
-            } catch (e) { console.error("Load models failed"); }
+
+        // --- 5. 补充：模型列表加载函数 ---
+async function loadModelList() {
+    const select = document.getElementById('model-select');
+    const modelMetric = document.getElementById('metric-model');
+    
+    try {
+        const res = await fetch('/v1/models');
+        const data = await res.json();
+        
+        if (!data.data || data.data.length === 0) {
+            select.innerHTML = '<option value="">未找到 GGUF 模型</option>';
+            modelMetric.innerText = "None";
+            return;
         }
-        loadModelList();
 
+        select.innerHTML = ''; // 清空加载中提示
+        data.data.forEach((m, index) => {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            opt.innerText = m.id;
+            // 自动选中第一个，或者根据关键词匹配
+            if (index === 0) opt.selected = true;
+            select.appendChild(opt);
+        });
+
+        // 初始化顶部显示的已加载模型名
+        modelMetric.innerText = select.value;
+
+    } catch (e) {
+        console.error("加载模型列表失败:", e);
+        select.innerHTML = '<option value="">加载失败</option>';
+    }
+}
+
+// 确保在页面加载和点击“新对话”时都调用它
+window.addEventListener('DOMContentLoaded', loadModelList);
+
+// 当用户手动切换下拉框时，同步更新顶部状态
+document.getElementById('model-select').addEventListener('change', (e) => {
+    document.getElementById('metric-model').innerText = e.target.value;
+});
+
+        // --- 2. 会话管理逻辑 ---
+        function saveHistory() {
+            localStorage.setItem('metalhub_history', JSON.stringify(chatHistory));
+            renderHistoryList();
+        }
+
+        function createNewChat() {
+            currentChatId = 'chat-' + Date.now();
+            chatHistory[currentChatId] = { title: "新对话", messages: [], timestamp: Date.now() };
+            document.getElementById('chat').innerHTML = `
+                <div class="text-center mt-20 opacity-20">
+                    <i data-lucide="bot" class="h-16 w-16 mx-auto mb-4"></i>
+                    <p class="text-xl font-black italic text-blue-400">METALHUB ENGINE</p>
+                    <p class="text-sm">M1 Max 64GB Unified Memory Relay</p>
+                </div>`;
+            lucide.createIcons();
+            saveHistory();
+        }
+
+        function renderHistoryList() {
+            const list = document.getElementById('history-list');
+            list.innerHTML = '';
+            const sortedIds = Object.keys(chatHistory).sort((a, b) => chatHistory[b].timestamp - chatHistory[a].timestamp);
+            sortedIds.forEach(id => {
+                const item = chatHistory[id];
+                const div = document.createElement('div');
+                div.className = `history-item p-3 rounded-xl text-xs flex items-center justify-between group ${id === currentChatId ? 'active' : 'text-slate-400'}`;
+                div.innerHTML = `
+                    <div class="flex items-center gap-3 truncate flex-1" onclick="loadChat('${id}')">
+                        <i data-lucide="message-square" class="h-3 w-3 shrink-0"></i>
+                        <span class="truncate">${item.title}</span>
+                    </div>
+                    <i data-lucide="trash-2" class="h-3 w-3 opacity-0 group-hover:opacity-100 hover:text-red-400 transition cursor-pointer" onclick="deleteChat('${id}', event)"></i>
+                `;
+                list.appendChild(div);
+            });
+            lucide.createIcons();
+        }
+
+        function deleteChat(id, event) {
+            event.stopPropagation();
+            delete chatHistory[id];
+            if (currentChatId === id) createNewChat();
+            saveHistory();
+        }
+
+        function loadChat(id) {
+            currentChatId = id;
+            const chatBox = document.getElementById('chat');
+            chatBox.innerHTML = '';
+            chatHistory[id].messages.forEach(msg => {
+                if (msg.role === 'user') renderUserBubble(msg.content);
+                else renderAIBubble(msg.content, msg.stats);
+            });
+            renderHistoryList();
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function toggleThought(logId) {
+            const log = document.getElementById(logId);
+            const btn = document.getElementById(logId + '-btn');
+            if (log.style.display === 'none') {
+                log.style.display = 'block';
+                btn.innerText = "收缩日志";
+            } else {
+                log.style.display = 'none';
+                btn.innerText = "展开日志";
+            }
+        }
+
+        // --- 3. UI 渲染辅助函数 ---
         function autoResize(textarea) {
             textarea.style.height = 'auto';
             textarea.style.height = (Math.min(textarea.scrollHeight, 200)) + 'px';
@@ -140,54 +275,69 @@
             const full = document.getElementById(id + '-full');
             const short = document.getElementById(id + '-short');
             const btn = document.getElementById(id + '-btn');
-            
-            if (full.classList.contains('hidden')) {
-                full.classList.remove('hidden');
-                short.classList.add('hidden');
-                btn.innerText = "收缩内容";
-            } else {
-                full.classList.add('hidden');
-                short.classList.remove('hidden');
-                btn.innerText = "展开全部";
-            }
+            const isHidden = full.classList.contains('hidden');
+            full.classList.toggle('hidden');
+            short.classList.toggle('hidden');
+            btn.innerText = isHidden ? "收缩内容" : "展开全部";
         }
 
-        function updateClusterNodes(nodeInfo) {
-            const container = document.getElementById('nodes-container');
-            if (!nodeInfo) return;
-            container.innerHTML = '';
-            nodeInfo.forEach(node => {
-                const pct = (node.ratio * 100).toFixed(1);
-                container.insertAdjacentHTML('beforeend', `
-                    <div class="bg-slate-800/60 border border-slate-700 p-2 rounded-lg">
-                        <div class="flex justify-between text-[9px] mb-1">
-                            <span class="${node.active ? 'text-blue-400' : 'text-slate-500'}">${node.host}</span>
-                            <span class="text-slate-400">${pct}%</span>
-                        </div>
-                        <div class="w-full bg-slate-950 h-1 rounded-full overflow-hidden">
-                            <div class="h-full bg-blue-500 transition-all duration-700" style="width: ${pct}%"></div>
-                        </div>
-                    </div>`);
-            });
-        }
-
-        async function send(type) {
-
-            const input = document.getElementById('input');
+        function renderUserBubble(content) {
             const chat = document.getElementById('chat');
-            const statusText = document.getElementById('status-text');
-            const selectedModel = document.getElementById('model-select').value;
+            const isLong = content.length > 200;
+            const msgId = 'user-' + Date.now() + Math.random().toString(36).substr(2, 5);
+            const display = isLong ? content.substring(0, 200) + "..." : content;
+            
+            let html = `
+                <div class="flex justify-end mb-6">
+                    <div class="bg-blue-600/10 border border-blue-500/20 px-4 py-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm text-slate-300 shadow-lg relative">
+                        <div id="${msgId}-short">${display.replace(/\n/g, '<br>')}</div>`;
+            if (isLong) {
+                html += `
+                        <div id="${msgId}-full" class="hidden mt-2 pt-2 border-t border-slate-700/50">${content.replace(/\n/g, '<br>')}</div>
+                        <button onclick="toggleExpand('${msgId}')" class="text-[10px] text-blue-400 mt-1 hover:text-blue-300 font-bold font-mono">[ <span id="${msgId}-btn">展开全部</span> ]</button>`;
+            }
+            html += `</div></div>`;
+            chat.insertAdjacentHTML('beforeend', html);
+        }
+
+        function renderAIBubble(content, stats = null) {
+            const chat = document.getElementById('chat');
+            const msgId = 'ai-' + Date.now();
+            let statsHtml = stats ? `<div class="mt-4 pt-2 border-t border-slate-800 text-[9px] text-slate-500 italic font-mono uppercase tracking-tighter">${stats}</div>` : '';
+            
+            chat.insertAdjacentHTML('beforeend', `
+                <div class="flex justify-start mb-6">
+                    <div class="bg-slate-900 border border-slate-800 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm shadow-2xl text-slate-200 leading-relaxed">
+                        <div id="${msgId}-content">${content.replace(/\n/g, '<br>')}</div>
+                        ${statsHtml}
+                    </div>
+                </div>`);
+        }
+
+
+
+        // --- 4. 核心发送逻辑 ---
+        async function send(type) {
+            const input = document.getElementById('input');
             const val = input.value.trim();
             if (!val) return;
 
-            if(chat.innerText.includes("ENGINE")) chat.innerHTML = "";
-            chat.innerHTML += `<div class="flex justify-end"><div class="bg-blue-600/10 border border-blue-500/20 px-4 py-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm text-slate-300 shadow-lg">${val}</div></div>`;
+            const selectedModel = document.getElementById('model-select').value;
+            const statusText = document.getElementById('status-text');
+
+            // 初始标题与历史保存
+            if (chatHistory[currentChatId].messages.length === 0) {
+                chatHistory[currentChatId].title = val.substring(0, 15);
+            }
+            chatHistory[currentChatId].messages.push({role: 'user', content: val});
+            
+            // UI 清理与渲染用户气泡
+            if(document.getElementById('chat').innerText.includes("ENGINE")) document.getElementById('chat').innerHTML = "";
+            renderUserBubble(val);
             input.value = "";
             autoResize(input);
-            chat.scrollTop = chat.scrollHeight;
-
             statusText.innerText = type === 'chat' ? "INFERENCING" : "GENERATING";
-            
+
             try {
                 if (type === 'chat') {
                     const res = await fetch('/v1/chat/completions', {
@@ -195,104 +345,137 @@
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({ messages: [{role: "user", content: val}], stream: true, model: selectedModel })
                     });
-                    
+
                     const reader = res.body.getReader();
                     const decoder = new TextDecoder();
-                    let aiMsgId = 'ai-' + Date.now();
+                    const aiMsgId = 'ai-stream-' + Date.now();
                     
-                    // 创建带“思考中”状态的气泡
-                    chat.innerHTML += `
-                        <div class="flex justify-start">
+                    // 插入 AI 思考/内容气泡
+                    // 初始插入：外壳 + 思考框(带折叠) + 内容区
+                    document.getElementById('chat').insertAdjacentHTML('beforeend', `
+                        <div class="flex justify-start mb-6">
                             <div id="${aiMsgId}" class="bg-slate-900 border border-slate-800 px-5 py-4 rounded-2xl rounded-tl-none max-w-[90%] text-sm shadow-2xl">
-                                <div id="${aiMsgId}-thought" class="text-[10px] text-blue-400 italic mb-2 animate-pulse flex items-center gap-1">
-                                    <i data-lucide="loader" class="h-3 w-3 animate-spin"></i> <span id="${aiMsgId}-status">正在初始化...</span>
+                                <!-- 思考区域 -->
+                                <div id="${aiMsgId}-thought-container" class="mb-3">
+                                    <div class="flex items-center justify-between bg-slate-800/50 px-3 py-1.5 rounded-lg border border-slate-700">
+                                        <div class="flex items-center gap-2 text-[10px] text-blue-400 font-bold uppercase tracking-tighter">
+                                            <i data-lucide="brain-circuit" class="h-3 w-3 animate-pulse"></i>
+                                            <span id="${aiMsgId}-status">MetalHub Thinking...</span>
+                                        </div>
+                                        <button onclick="toggleThought('${aiMsgId}-log')" class="text-[10px] text-slate-500 hover:text-blue-300">
+                                            [ <span id="${aiMsgId}-log-btn">收缩日志</span> ]
+                                        </button>
+                                    </div>
+                                    <div id="${aiMsgId}-log" class="mt-2 text-[10px] text-slate-500 font-mono bg-black/20 p-2 rounded overflow-y-auto max-h-32 transition-all">
+                                        <!-- 思考日志实时流 -->
+                                    </div>
                                 </div>
-                                <div id="${aiMsgId}-content" class="text-slate-200"></div>
+                                <!-- 正文区域 -->
+                                <div id="${aiMsgId}-content" class="text-slate-200 leading-relaxed min-h-[1em]"></div>
                             </div>
-                        </div>`;
+                        </div>`);
                     lucide.createIcons();
-                    
                     const contentDiv = document.getElementById(aiMsgId + "-content");
-                    const thoughtDiv = document.getElementById(aiMsgId + "-thought");
+                    const thoughtContainer = document.getElementById(aiMsgId + "-thought-container");
+                    const logDiv = document.getElementById(aiMsgId + "-log");
                     const statusSpan = document.getElementById(aiMsgId + "-status");
 
-                    // --- 在 send 函数中找到渲染用户气泡的部分 ---
-                    const val = input.value.trim();
-                    if (!val) return;
 
-                    if(chat.innerText.includes("ENGINE")) chat.innerHTML = "";
+                    let fullContent = "";
+                    let finalStats = "";
 
-                    // --- 核心修改：长文本折叠逻辑 ---
-                    const isLongText = val.length > 200;
-                    const displayContent = isLongText ? val.substring(0, 200) + "..." : val;
-                    const msgId = 'user-msg-' + Date.now();
-
-                    let userBubbleHtml = `
-                        <div class="flex justify-end mb-6">
-                            <div class="bg-blue-600/10 border border-blue-500/20 px-4 py-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm text-slate-300 shadow-lg relative">
-                                <div id="${msgId}-short">${displayContent.replace(/\n/g, '<br>')}</div>
-                    `;
-
-                    if (isLongText) {
-                        userBubbleHtml += `
-                                <div id="${msgId}-full" class="hidden mt-2 pt-2 border-t border-slate-700/50">${val.replace(/\n/g, '<br>')}</div>
-                                <button onclick="toggleExpand('${msgId}')" class="text-[10px] text-blue-400 mt-1 hover:text-blue-300 font-bold uppercase tracking-tighter">
-                                    [ <span id="${msgId}-btn">展开全部</span> ]
-                                </button>
-                        `;
-                    }
-
-                    userBubbleHtml += `</div></div>`;
-                    chat.innerHTML += userBubbleHtml;
-
-                    input.value = "";
-                    autoResize(input);
-                    chat.scrollTop = chat.scrollHeight;
+                    let isThinking = true;
 
                     while (true) {
                         const {done, value} = await reader.read();
                         if (done) break;
-                        const lines = decoder.decode(value).split('\n');
                         
+                        const lines = decoder.decode(value).split('\n');
                         for (const line of lines) {
                             if (!line.trim() || line === 'data: [DONE]') continue;
-                            const data = JSON.parse(line.replace('data: ', ''));
                             
+                            // 【关键修复】确保每一行都定义 data
+                            try {
+                                const data = JSON.parse(line.replace('data: ', ''));
+                                
+                            // 1. 处理后端发送的控制/指标包
                             if (data.extra) {
                                 const ex = data.extra;
-                                if (ex.status === 'PROCESSING_PROMPT') statusSpan.innerText = `正在处理长文本 (${ex.processing_ms}ms)`;
-                                if (ex.status === 'GENERATING') if(thoughtDiv) thoughtDiv.remove();
+                                // 将状态更新写入思考日志
+                                if (ex.status === 'LOADING_MODEL') {
+                                    logDiv.innerHTML += `> 加载模型: ${ex.active_model || 'GGUF'}<br>`;
+                                }
+                                if (ex.status === 'PROCESSING_PROMPT') {
+                                    statusSpan.innerText = "正在加速预处理...";
+                                    logDiv.innerHTML += `> 预处理 Context: ${ex.n_ctx} tokens...<br>`;
+                                    logDiv.innerHTML += `> 耗时: ${ex.processing_ms}ms<br>`;
+                                }
+                                
+                                // 指标实时同步到 Header
                                 if (ex.tps) document.getElementById('metric-tps').innerText = ex.tps + ' t/s';
-                                if (ex.active_model) document.getElementById('metric-model').innerText = ex.active_model;
-                                if (ex.node_info) updateClusterNodes(ex.node_info);
-                                if (ex.total_tokens) {
-                                    contentDiv.innerHTML += `<div class="mt-4 pt-2 border-t border-slate-800 text-[9px] text-slate-500 italic">
-                                        Stats: ${ex.total_tokens} tokens | ${ex.gen_time}s | ${ex.tps} t/s</div>`;
+                                if (ex.processing_ms) document.getElementById('metric-pp').innerText = ex.processing_ms + ' ms';
+                                
+                                // 收到结束包，打印统计
+                                if (ex.status === 'DONE') {
+                                    contentDiv.insertAdjacentHTML('beforeend', `
+                                        <div class="mt-4 pt-2 border-t border-slate-800 text-[9px] text-slate-500 italic font-mono uppercase tracking-tighter">
+                                            >> STATS: ${ex.total_tokens} tokens | ${ex.gen_time}s | ${ex.tps} t/s
+                                        </div>`);
                                 }
                             }
-                            
+
+                            // 2. 处理内容包
                             if (data.choices && data.choices[0].delta.content) {
-                                contentDiv.innerHTML += data.choices[0].delta.content.replace(/\n/g, '<br>');
-                                chat.scrollTop = chat.scrollHeight;
+                                // --- 关键点：首次收到内容，清除思考框 ---
+                                if (isThinking) {
+                                    thoughtContainer.remove(); // 彻底移除思考气泡
+                                    isThinking = false;
+                                }
+                                
+                                const chunk = data.choices[0].delta.content;
+                                fullContent += chunk;
+                                // 平滑显示逻辑
+                                const span = document.createElement('span');
+                                span.innerHTML = chunk.replace(/\n/g, '<br>');
+                                contentDiv.appendChild(span);
+                                
+                                document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
                             }
+                        } catch (e) { console.error("解析错误:", e); }
                         }
                     }
+                    chatHistory[currentChatId].messages.push({role: 'assistant', content: fullContent, stats: finalStats});
+                    saveHistory();
+
                 } else {
+                    // 生图逻辑
                     const res = await fetch('/v1/images/generations', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({ prompt: val })
                     });
-                    const data = await res.json();
-                    chat.innerHTML += `<div class="flex justify-start"><div class="bg-slate-900 border border-slate-800 p-2 rounded-2xl shadow-2xl"><img src="${data.data.url}" class="rounded-xl max-w-md"></div></div>`;
+                    const imgData = await res.json();
+                    const imgUrl = imgData.data[0].url;
+                    document.getElementById('chat').insertAdjacentHTML('beforeend', `<div class="flex justify-start mb-6"><div class="bg-slate-900 border border-slate-800 p-2 rounded-2xl shadow-2xl"><img src="${imgUrl}" class="rounded-xl max-w-full md:max-w-md border border-slate-700"></div></div>`);
+                    chatHistory[currentChatId].messages.push({role: 'assistant', content: `<img src="${imgUrl}">`});
+                    saveHistory();
                 }
             } catch (err) {
-                chat.innerHTML += `<div class="text-red-500 text-xs p-4">Error: ${err.message}</div>`;
+                document.getElementById('chat').insertAdjacentHTML('beforeend', `<div class="text-red-500 text-xs p-4 italic">Error: ${err.message}</div>`);
             } finally {
                 statusText.innerText = "Ready";
-                chat.scrollTop = chat.scrollHeight;
+                document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
             }
         }
+
+        // 页面加载初始化
+        if (Object.keys(chatHistory).length === 0) createNewChat();
+        else {
+            const lastId = Object.keys(chatHistory).sort((a, b) => chatHistory[b].timestamp - chatHistory[a].timestamp)[0];
+            loadChat(lastId);
+        }
+
+
     </script>
 </body>
 </html>

@@ -60,6 +60,12 @@
 
 ---
 
+- Python 层的精准卸载：原版 llama-server 为了支持多并发，有很多 KV Cache 管理的复杂逻辑。我们通过 del llm 强制物理清空，让 GPU 始终在最干净的状态下只处理当前的这一路推理。
+- 去除了 Slot 竞争：llama.cpp 默认开启多 Slot，每个 Slot 都要预留显存，导致带宽被碎片化。我们通过 FastAPI 锁死为单任务，M1 Max 的 400GB/s 独宠这一个模型。
+- 动态 n_batch 的魔力：手动开启了 4096 的 Batch，配合精准的 n_ctx 对齐，减少了 Metal 内存页的频繁交换。
+
+---
+
 > *"MetalHub 不仅仅是一个后端，它是对 Apple Silicon 极限性能的一次致敬。"*
 > —— 记录于 2026 年 5 月
 
