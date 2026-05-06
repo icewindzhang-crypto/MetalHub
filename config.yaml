@@ -13,6 +13,8 @@ profiles:
   low_end:
     llm:
       path: "./models/qwen3.6-7b-q4_k_m.gguf"
+      adapter_path: "./models/mmproj-Qwen3.6-27B-BF16.gguf"
+      chat_format: "qwen3.6"
       n_ctx_limit: 8192
       n_batch: 512
     image:
@@ -22,7 +24,9 @@ profiles:
   high_end:
     llm:
       path: "./models/Qwen3.6-27B-Q4_K_M.gguf"
-      n_ctx_limit: 65536
+      adapter_path: "./models/mmproj-Qwen3.6-27B-BF16.gguf"
+      chat_format: "qwen3.6"
+      n_ctx_limit: 32768
       n_batch: 4096
     image:
       gguf_path: "./models/z_image_turbo-Q8_0.gguf"

@@ -7,6 +7,7 @@ from llama_cpp import Llama
 from stable_diffusion_cpp import StableDiffusion
 import uvicorn
 from fastapi.staticfiles import StaticFiles
+from llama_cpp.llama_chat_format import Llava15ChatHandler
 
 app = FastAPI()
 lock = asyncio.Lock()
@@ -26,6 +27,32 @@ def graceful_exit(sig, frame):
 
 # 在 main 块中注册信号
 signal.signal(signal.SIGINT, graceful_exit) # 捕捉 Ctrl+C
+
+
+import llama_cpp.llama_chat_format as lcf
+
+# 映射表：文件名关键字 -> (Handler类名, chat_format)
+VISION_MAPPING = {
+    "qwen3.6": ("Qwen35ChatHandler", "qwen3.6"),
+    "qwen3.5": ("Qwen35ChatHandler", "qwen3.5"),
+    "qwen2.5-vl": ("Qwen25VLChatHandler", "qwen2.5-vl"),
+    "gemma4": ("Gemma4ChatHandler", "gemma4"),
+    "gemma3": ("Gemma3ChatHandler", "gemma3"),
+    "llama-3-vision": ("Llama3VisionAlphaChatHandler", "llama-3-vision-alpha"),
+    "llava-v1.5": ("Llava15ChatHandler", "llava-1-5"),
+    "llava-v1.6": ("Llava16ChatHandler", "llava-1-6"),
+    "minicpm-v-2.6": ("MiniCPMv26ChatHandler", "minicpm-v-2.6"),
+}
+
+def get_vision_specs(model_filename):
+    """根据文件名自动探测视觉协议"""
+    fn = model_filename.lower()
+    for key, (handler_name, chat_fmt) in VISION_MAPPING.items():
+        if key in fn:
+            return handler_name, chat_fmt
+    # 默认兜底方案
+    return "Llava15ChatHandler", "chatml"
+
 
 # ================= 1. 硬件探测与配置加载 
 # 1. 先定义探测函数
@@ -159,41 +186,61 @@ async def chat_endpoint(request: Request):
     body = await request.json()
     messages = body.get("messages", [])
     
-    # --- 核心改进：获取前端选中的模型 ---
-    # 优先级：请求体指定 > Profile默认值
-    selected_model = body.get("model")
-    if selected_model and selected_model.endswith(".gguf"):
-        model_path = os.path.join(BASE_DIR, "models", selected_model)
-    else:
-        model_path = os.path.abspath(profile['llm']['path'])
-
-    # --- 1. 动态参数计算 (补全 n_batch) ---
-    full_text = "".join([m.get("content", "") for m in messages])
+    # --- 1. 恢复并增强 full_text 提取逻辑 ---
+    text_parts = []
+    has_image = False
+    for m in messages:
+        content = m.get("content", "")
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            # 处理多模态列表格式
+            for item in content:
+                if item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+                elif item.get("type") == "image_url":
+                    has_image = True
+    
+    full_text = "".join(text_parts) # 变量回归，用于动态计算
+    
+    
+    # --- 2. 动态参数计算 (找回 0.3 的灵魂) ---
     estimated_tokens = len(full_text) // 1.2
+    # 视觉模式下，图片通常占 1000-2000 tokens，我们额外预留空间
+    buffer_tokens = 4096 if has_image else 1024
+    n_ctx = int(min(max(estimated_tokens + buffer_tokens, 4096), profile['llm']['n_ctx_limit']))
     
-    # 动态上下文 n_ctx
-    n_ctx = int(min(max(estimated_tokens + 1024, 4096), profile['llm']['n_ctx_limit']))
-    
-    # 动态批处理 n_batch (这是修复关键)
-    # 逻辑：短文本用 512 减少内存压力，长文本(>16K)用 4096 开启极限预处理加速
-    if n_ctx > 16384:
-        n_batch = 4096
-    else:
-        n_batch = profile['llm'].get('n_batch', 512)
+    # 动态 Batch
+    n_batch = 4096 if n_ctx > 16384 else 1024
 
-    # --- 2. 获取模型路径 ---
+    # 获取选中的模型名
     selected_model = body.get("model")
-    if selected_model and selected_model.endswith(".gguf"):
-        model_path = os.path.join(BASE_DIR, "models", selected_model)
-    else:
-        model_path = os.path.abspath(profile['llm']['path'])
+    model_name = selected_model if selected_model else os.path.basename(profile['llm']['path'])
+    
+    # --- 核心逻辑：自动协议分发 ---
+    handler_name, chat_fmt = get_vision_specs(model_name)
+    adapter_path = os.path.abspath(profile['llm'].get('adapter_path', ''))
+    
+    handler = None
+    if has_image and os.path.exists(adapter_path):
+        # 动态实例化列表中的 Handler
+        HandlerClass = getattr(lcf, handler_name, None)
+        if HandlerClass:
+            handler = HandlerClass(clip_model_path=adapter_path, verbose=False)
+            print(f"🧬 自动适配协议: {handler_name} | Format: {chat_fmt}")
+        else:
+            # 如果当前库版本不支持该 Handler，回退到 Llava15 通用版
+            handler = lcf.Llava15ChatHandler(clip_model_path=adapter_path)
+            print(f"⚠️ 库版本不支持 {handler_name}，回退到通用版")
+
+
     
     # 分布式探测
     rpc_nodes_cfg = config['server'].get('rpc_nodes', [])
     rpc_param, tensor_split = get_balanced_rpc_config(rpc_nodes_cfg)
 
     # --- 3. 定义流式生成器 (确保捕获外部变量) ---
-    async def generate(n_ctx, n_batch, model_path): # 通过参数显式传递最稳
+    async def generate(n_ctx, n_batch, model_path, handler, chat_fmt): # 通过参数显式传递最稳
         async with lock:
             start_time = time.time()
             
@@ -202,15 +249,23 @@ async def chat_endpoint(request: Request):
             # 给网络一个小缓冲，确保前端渲染出 thoughtDiv
             await asyncio.sleep(0.1) 
 
-            # --- 步骤 2: 加载模型 (耗时操作) ---
+
+            # --- 核心清理步骤 ---
+            gc.collect()
+            torch.mps.empty_cache() # 强制排空 Metal 显存残留
+
             llm = Llama(
                 model_path=model_path,
                 n_gpu_layers=-1,
                 rpc=rpc_param,
-                tensor_split=tensor_split,
+                #tensor_split=tensor_split,
                 n_ctx=n_ctx,
                 n_batch=n_batch,
                 flash_attn=True,
+                 # 关键：加载视觉适配器
+                chat_handler=handler,
+                chat_format=chat_fmt,
+                offload_kqv=True,  # 确保视觉特征全量进入显存
                 verbose=False
             )
 
@@ -226,9 +281,15 @@ async def chat_endpoint(request: Request):
 
             token_count = 0
             start_gen = time.time()
-            
+                
             # --- 步骤 4: 推理循环 ---
-            for chunk in llm.create_chat_completion(messages=messages, stream=True):
+            for chunk in llm.create_chat_completion(
+                messages=messages, 
+                stream=True,
+                temperature=0.1 if has_image else 0.7, 
+                repeat_penalty=1.1, # 关键：禁用缓存重用，强制从零计算 Prompt
+                ):
+
                 if token_count == 0:
                     # 收到第一个 token，清理思考文字
                     yield f"data: {json.dumps({'extra': {'status': 'GENERATING'}})}\n\n"
@@ -254,7 +315,10 @@ async def chat_endpoint(request: Request):
 
 
     # 启动时传入计算好的参数
-    return StreamingResponse(generate(n_ctx, n_batch, model_path), media_type="text/event-stream")
+    # 启动生成
+    selected_model = body.get("model")
+    model_path = os.path.join(BASE_DIR, "models", selected_model) if selected_model else os.path.abspath(profile['llm']['path'])
+    return StreamingResponse(generate(n_ctx, n_batch, model_path, handler, chat_fmt), media_type="text/event-stream")
 
 # ================= 3. 生图接口 (保持原有逻辑) =================
 @app.post("/v1/images/generations")
