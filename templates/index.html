@@ -30,6 +30,14 @@
         .markdown-body h1, .markdown-body h2 { color: #60a5fa; font-weight: bold; margin-top: 1rem; }
     </style>
     <style>
+        @keyframes slideInRight {
+            from { transform: translateX(20px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        #monitor-list > div {
+            animation: slideInRight 0.3s ease-out;
+        }
+
         .history-item .lucide-trash-2:hover {
             color: #ef4444 !important; /* 鲜艳的红色 */
             transform: scale(1.1);
@@ -101,6 +109,22 @@
                 .history-item { cursor: pointer; transition: all 0.2s; border: 1px solid transparent; }
                 .history-item:hover { background-color: #1e293b; }
             </style>
+             <!-- Live API Monitor Panel -->
+            <div class="mb-6">
+                <div class="flex justify-between items-center mb-2">
+                    <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest flex items-center gap-2">
+                        <span class="relative flex h-2 w-2">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                        </span>
+                        Live API Traffic
+                    </label>
+                    <span id="total-tokens-served" class="text-[9px] font-mono text-slate-500 bg-slate-800 px-1.5 py-0.5 rounded">0 TOKENS</span>
+                </div>
+                <div id="monitor-list" class="space-y-2 max-h-48 overflow-y-auto pr-2">
+                    <p class="text-[10px] text-slate-700 italic px-2">无活跃外部请求...</p>
+                </div>
+            </div>
             <div>
                 <label class="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Cluster Distribution</label>
                 <div id="nodes-container" class="mt-2 space-y-3">
@@ -181,6 +205,81 @@
                 mangle: false
             });
         });
+
+        // 初始化监控连接
+        function initMonitor() {
+            const eventSource = new EventSource('/v1/system/monitor/stream');
+            const list = document.getElementById('monitor-list');
+            const totalLabel = document.getElementById('total-tokens-served');
+
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.total) totalLabel.innerText = data.total.toLocaleString() + ' TOKENS';
+
+                if (data.type === 'INIT') {
+                    list.innerHTML = data.tasks.length ? '' : '<p class="text-[10px] text-slate-700 italic px-2">等待 API 流量...</p>';
+                    data.tasks.forEach(task => updateTaskUI(task));
+                } else if (data.type === 'UPDATE') {
+                    updateTaskUI(data.task);
+                }
+            };
+        }
+
+        function updateTaskUI(task) {
+            const list = document.getElementById('monitor-list');
+            let taskEl = document.getElementById(`monitor-task-${task.id}`);
+            
+            if (list.querySelector('p')) list.innerHTML = '';
+
+            // --- 1. 处理请求来源标签与颜色 ---
+            const isLocal = (task.ip === '127.0.0.1' || task.ip === 'localhost');
+            const sourceLabel = isLocal ? 'INTERNAL' : task.ip;
+            const sourceColor = isLocal ? 'text-blue-400 bg-blue-500/10' : 'text-purple-400 bg-purple-500/10';
+            const sourceIcon = isLocal ? 'monitor' : 'globe'; // 本地显示屏幕，外部显示地球
+            
+            // --- 2. 处理任务状态与类型图标 ---
+            const statusColor = task.status === 'RUNNING' ? 'text-amber-400 animate-pulse' : 'text-emerald-500';
+            const typeIcon = task.type === 'VISION' ? 'eye' : 'message-square';
+            
+            // --- 3. 构造 HTML ---
+            const html = `
+                <div class="flex flex-col bg-slate-800/40 border-l-2 ${task.status === 'RUNNING' ? 'border-amber-500' : 'border-emerald-500'} p-2 rounded-r-lg mb-2 transition-all duration-500">
+                    <div class="flex justify-between items-start mb-1">
+                        <!-- 模型名称与类型 -->
+                        <span class="text-[9px] font-bold text-slate-300 flex items-center gap-1">
+                            <i data-lucide="${typeIcon}" class="w-3 h-3"></i> 
+                            ${task.model.length > 15 ? task.model.substring(0, 15) + '...' : task.model}
+                        </span>
+                        <!-- 来源图标标签 (动态更新点) -->
+                        <span class="text-[8px] px-1.5 py-0.5 rounded font-mono ${sourceColor} flex items-center gap-1">
+                            <i data-lucide="${sourceIcon}" class="w-2 h-2"></i> ${sourceLabel}
+                        </span>
+                    </div>
+                    <div class="flex justify-between items-center text-[8px] uppercase tracking-tighter">
+                        <span class="${statusColor} font-black">${task.status}</span>
+                        <span class="text-slate-500">
+                            ${task.status === 'COMPLETED' ? `<b class="text-slate-300">${task.tps} t/s</b> | ${task.tokens} tokens` : task.start_time}
+                        </span>
+                    </div>
+                </div>
+            `;
+
+            // --- 4. 插入或更新 DOM ---
+            if (!taskEl) {
+                taskEl = document.createElement('div');
+                taskEl.id = `monitor-task-${task.id}`;
+                list.prepend(taskEl); // 新请求置顶
+            }
+            taskEl.innerHTML = html;
+            
+            // --- 5. 关键：重新渲染新插入的图标 ---
+            lucide.createIcons();
+        }
+
+
+        // 页面启动时运行
+        initMonitor();
+
 
         let currentChatId = null;
         let chatHistory = JSON.parse(localStorage.getItem('metalhub_history') || '{}');

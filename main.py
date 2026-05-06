@@ -23,7 +23,7 @@ def graceful_exit(sig, frame):
     # 这里可以尝试强制释放一些全局资源
     gc.collect()
     torch.mps.empty_cache()
-    exit(0)
+    os._exit(0)
 
 # 在 main 块中注册信号
 signal.signal(signal.SIGINT, graceful_exit) # 捕捉 Ctrl+C
@@ -118,6 +118,67 @@ if active_name == 'auto': active_name = detect_hardware()
 profile = config['profiles'][active_name]
 
 
+import uuid, asyncio
+from datetime import datetime
+
+# ================= 审计与监控单例 =================
+class AuditManager:
+    def __init__(self):
+        self.active_tasks = {}
+        self.total_tokens_all_time = 0
+        self.broadcast_queue = asyncio.Queue() # 用于将更新推送给前端监控界面
+
+    def start_task(self, model, client_ip, task_type="TEXT"):
+        task_id = str(uuid.uuid4())[:8]
+        task_data = {
+            "id": task_id,
+            "model": model,
+            "ip": client_ip,
+            "start_time": datetime.now().strftime("%H:%M:%S"),
+            "status": "RUNNING",
+            "type": task_type,
+            "tps": 0,
+            "tokens": 0
+        }
+        self.active_tasks[task_id] = task_data
+        # 通知监控面板有新任务
+        asyncio.create_task(self.broadcast_queue.put(task_data))
+        return task_id
+
+    def end_task(self, task_id, tps=0, tokens=0):
+        if task_id in self.active_tasks:
+            self.active_tasks[task_id]["status"] = "COMPLETED"
+            self.active_tasks[task_id]["tps"] = tps
+            self.active_tasks[task_id]["tokens"] = tokens
+            self.total_tokens_all_time += tokens
+            # 通知监控面板任务结束
+            asyncio.create_task(self.broadcast_queue.put(self.active_tasks[task_id]))
+            # 延迟清理（保留在界面显示一会儿）
+            asyncio.create_task(self._delayed_remove(task_id))
+
+    async def _delayed_remove(self, task_id):
+        await asyncio.sleep(30) # 30秒后从内存移除
+        if task_id in self.active_tasks:
+            del self.active_tasks[task_id]
+
+audit_log = AuditManager()
+
+# ================= 监控实时流接口 =================
+@app.get("/v1/system/monitor/stream")
+async def monitor_stream():
+    """专门供前端控制台连接的 SSE 接口"""
+    async def event_generator():
+        # 首次连接，发送当前所有任务
+        yield f"data: {json.dumps({'type': 'INIT', 'tasks': list(audit_log.active_tasks.values()), 'total': audit_log.total_tokens_all_time})}\n\n"
+        
+        while True:
+            # 阻塞等待队列中的新更新
+            update = await audit_log.broadcast_queue.get()
+            yield f"data: {json.dumps({'type': 'UPDATE', 'task': update, 'total': audit_log.total_tokens_all_time})}\n\n"
+            
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 # 修改 main.py 中的 chat_endpoint 生成器部分
 # 修改 main.py 中的 stream_generator
 async def stream_generator(n_ctx, n_batch, model_path):
@@ -202,6 +263,11 @@ async def chat_endpoint(request: Request):
                     has_image = True
     
     full_text = "".join(text_parts) # 变量回归，用于动态计算
+
+
+    # 启动审计
+    selected_model = body.get("model", os.path.basename(profile['llm']['path']))
+    task_id = audit_log.start_task(selected_model, request.client.host, "VISION" if has_image else "TEXT")
     
     
     # --- 2. 动态参数计算 (找回 0.3 的灵魂) ---
@@ -240,85 +306,98 @@ async def chat_endpoint(request: Request):
     rpc_param, tensor_split = get_balanced_rpc_config(rpc_nodes_cfg)
 
     # --- 3. 定义流式生成器 (确保捕获外部变量) ---
-    async def generate(n_ctx, n_batch, model_path, handler, chat_fmt): # 通过参数显式传递最稳
-        async with lock:
-            start_time = time.time()
-            
-            # --- 步骤 1: 立即发送加载信号（此时 Llama 还没开始初始化） ---
-            yield f"data: {json.dumps({'extra': {'status': 'LOADING_MODEL', 'active_model': os.path.basename(model_path)}})}\n\n"
-            # 给网络一个小缓冲，确保前端渲染出 thoughtDiv
-            await asyncio.sleep(0.1) 
-
-
-            # --- 核心清理步骤 ---
-            gc.collect()
-            torch.mps.empty_cache() # 强制排空 Metal 显存残留
-
-            llm = Llama(
-                model_path=model_path,
-                n_gpu_layers=-1,
-                rpc=rpc_param,
-                #tensor_split=tensor_split,
-                n_ctx=n_ctx,
-                n_batch=n_batch,
-                flash_attn=True,
-                 # 关键：加载视觉适配器
-                chat_handler=handler,
-                chat_format=chat_fmt,
-                offload_kqv=True,  # 确保视觉特征全量进入显存
-                verbose=False
-            )
-
-            load_done = time.time()
-            load_ms = round((load_done - start_time) * 1000, 2)
-
-            # --- 步骤 3: 立即发送预处理信号 ---
-            yield f"data: {json.dumps({'extra': {
-                'status': 'PROCESSING_PROMPT', 
-                'processing_ms': load_ms, 
-                'n_ctx': n_ctx
-            }})}\n\n"
-
-            token_count = 0
-            start_gen = time.time()
+    async def generate(n_ctx, n_batch, model_path, handler, chat_fmt, task_id): # 通过参数显式传递最稳
+               # 增加信号保护，防止 CTRL+C 时产生孤儿进程
+        llm = None
+        try:
+            async with lock:
+                start_time = time.time()
                 
-            # --- 步骤 4: 推理循环 ---
-            for chunk in llm.create_chat_completion(
-                messages=messages, 
-                stream=True,
-                temperature=0.1 if has_image else 0.7, 
-                repeat_penalty=1.1, # 关键：禁用缓存重用，强制从零计算 Prompt
-                ):
+                # --- 步骤 1: 立即发送加载信号（此时 Llama 还没开始初始化） ---
+                yield f"data: {json.dumps({'extra': {'status': 'LOADING_MODEL', 'active_model': os.path.basename(model_path)}})}\n\n"
+                # 给网络一个小缓冲，确保前端渲染出 thoughtDiv
+                await asyncio.sleep(0.1) 
 
-                if token_count == 0:
-                    # 收到第一个 token，清理思考文字
-                    yield f"data: {json.dumps({'extra': {'status': 'GENERATING'}})}\n\n"
+
+                # --- 核心清理步骤 ---
+                gc.collect()
+                torch.mps.empty_cache() # 强制排空 Metal 显存残留
+
+                llm = Llama(
+                    model_path=model_path,
+                    n_gpu_layers=-1,
+                    rpc=rpc_param,
+                    #tensor_split=tensor_split,
+                    n_ctx=n_ctx,
+                    n_batch=n_batch,
+                    flash_attn=True,
+                    # 关键：加载视觉适配器
+                    chat_handler=handler,
+                    chat_format=chat_fmt,
+                    offload_kqv=True,  # 确保视觉特征全量进入显存
+                    verbose=False
+                )
+
+                load_done = time.time()
+                load_ms = round((load_done - start_time) * 1000, 2)
+
+                # --- 步骤 3: 立即发送预处理信号 ---
+                yield f"data: {json.dumps({'extra': {
+                    'status': 'PROCESSING_PROMPT', 
+                    'processing_ms': load_ms, 
+                    'n_ctx': n_ctx
+                }})}\n\n"
+
+                token_count = 0
+                start_gen = time.time()
+                    
+                # --- 步骤 4: 推理循环 ---
+                for chunk in llm.create_chat_completion(
+                    messages=messages, 
+                    stream=True,
+                    temperature=0.1 if has_image else 0.7, 
+                    repeat_penalty=1.1, # 关键：禁用缓存重用，强制从零计算 Prompt
+                    ):
+
+                    if token_count == 0:
+                        # 收到第一个 token，清理思考文字
+                        yield f"data: {json.dumps({'extra': {'status': 'GENERATING'}})}\n\n"
+                    
+                    token_count += 1
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    
                 
-                token_count += 1
-                yield f"data: {json.dumps(chunk)}\n\n"
-            
-            # --- 步骤 5: 发送最终统计 ---
-            gen_duration = time.time() - start_gen
-            tps = round(token_count / gen_duration, 2) if gen_duration > 0 else 0
-            yield f"data: {json.dumps({'extra': {
-                'status': 'DONE',
-                'tps': tps, 
-                'total_tokens': token_count,
-                'gen_time': round(gen_duration, 2)
-            }})}\n\n"
-            yield "data: [DONE]\n\n"
+                # --- 步骤 5: 发送最终统计 ---
+                gen_duration = time.time() - start_gen
+                tps = round(token_count / gen_duration, 2) if gen_duration > 0 else 0
+                audit_log.end_task(task_id, tps=tps, tokens=token_count)
 
-            
-            del llm
+                yield f"data: {json.dumps({'extra': {
+                    'status': 'DONE',
+                    'tps': tps, 
+                    'total_tokens': token_count,
+                    'gen_time': round(gen_duration, 2)
+                }})}\n\n"
+
+                yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            print(f"❌ 推理异常: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            # 无论成功还是被 CTRL+C 中断，必须释放资源
+            if llm:
+                del llm
             gc.collect()
             torch.mps.empty_cache()
+            print(f"♻️ 显存已释放 (Task: {task_id})")
 
 
     # 启动时传入计算好的参数
     # 启动生成
     selected_model = body.get("model")
     model_path = os.path.join(BASE_DIR, "models", selected_model) if selected_model else os.path.abspath(profile['llm']['path'])
-    return StreamingResponse(generate(n_ctx, n_batch, model_path, handler, chat_fmt), media_type="text/event-stream")
+    return StreamingResponse(generate(n_ctx, n_batch, model_path, handler, chat_fmt, task_id), media_type="text/event-stream")
 
 # ================= 3. 生图接口 (保持原有逻辑) =================
 @app.post("/v1/images/generations")
